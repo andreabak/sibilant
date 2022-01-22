@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import field as dataclass_field
-from typing import Optional, Pattern, ClassVar, Match, Collection, Dict, Mapping, TYPE_CHECKING
+from typing import Optional, Match, Collection, Dict, Mapping, TYPE_CHECKING
 
 try:
     from typing import Self
@@ -27,8 +27,14 @@ HOST_PAT: str = r"(?P<host>(?:\w+\.)*\w+)(?::(?P<port>\d+))?"
 SCHEME_PAT: str = r"(?P<scheme>sips?)(?=:)"
 PARAMS_PAT: str = rf"(?P<params>(?:;[\w{UW}]+(?:=[\w{UW}]+)?)+)"
 HEADERS_PAT: str = rf"(?=\?)(?P<headers>(?:[?&][\w{UW}]+=[\w{UW}]+)+)"
-URI_PAT: str = rf"(?P<uri>(?:{SCHEME_PAT}:)?(?:{CONTACT_PAT}@)?{HOST_PAT}(?:{PARAMS_PAT})?(?:{HEADERS_PAT})?)"
-ADDRESS_PATS: Collection[str] = [rf"(?:{DISPLAY_NAME_PAT}\s*)?<{URI_PAT}>", URI_PAT]
+URI_PART_PAT: str = (
+    rf"(?:{SCHEME_PAT}:)?(?:{CONTACT_PAT}@)?{HOST_PAT}"
+    rf"(?:{PARAMS_PAT})?(?:{HEADERS_PAT})?"
+)
+URI_PATS: Collection[str] = [URI_PART_PAT, rf"<{URI_PART_PAT}>"]
+ADDRESS_PATS: Collection[str] = [
+    rf"(?:{DISPLAY_NAME_PAT}\s*)?(?P<uri>{p})" for p in URI_PATS
+]
 
 
 @dataclass(slots=True, frozen=True)
@@ -43,12 +49,13 @@ class SIPURI:
     params: Mapping[str, Optional[str]] = dataclass_field(default_factory=frozendict)
     headers: Mapping[str, str] = dataclass_field(default_factory=frozendict)
 
-    _uri_re: ClassVar[Pattern] = re.compile(URI_PAT)
-
     @classmethod
     def parse(cls, value: str) -> SIPURI:
         """Parse a SIP URI"""
-        match: Optional[Match] = cls._uri_re.fullmatch(value)
+        match: Optional[Match] = None
+        for uri_pat in URI_PATS:
+            if match := re.fullmatch(uri_pat, value):
+                break
         if match is None:
             raise SIPParseError(f"Invalid SIP URI: {value}")
         params: Dict[str, Optional[str]] = {}
@@ -57,7 +64,9 @@ class SIPURI:
                 name: value
                 for param in params_raw.split(";")
                 if param
-                for name, value in (param.split("=") if "=" in param else (param, None),)
+                for name, value in (
+                    param.split("=") if "=" in param else (param, None),
+                )
             }
         headers: Dict[str, str] = {}
         if headers_raw := match.group("headers"):
@@ -81,7 +90,11 @@ class SIPURI:
         password: str = f":{self.password}" if self.password else ""
         login: str = f"{self.user}{password}@" if self.user else ""
         hostname: str = f"{self.host}:{self.port}" if self.port else self.host
-        return f"{self.scheme}:{login}{hostname}"
+        params: str = "".join(f";{name}={value}" for name, value in self.params.items())
+        headers: str = "".join(
+            f"?{name}={value}" for name, value in self.headers.items()
+        )
+        return f"{self.scheme}:" + login + hostname + params + headers
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,7 +117,10 @@ class SIPAddress:
             raise SIPParseError(f"Invalid SIP address: {value}")
         assert uri_raw is not None
         uri: SIPURI = SIPURI.parse(uri_raw)
-        return cls(uri=uri, display_name=match_groups.get("display_name"))
+        display_name = match_groups.get("display_name")
+        if display_name and display_name[0] in ("'", '"'):
+            display_name = re.sub(r"^\s*([\"'])(.*?)\1\s*$", r"\2", display_name)
+        return cls(uri=uri, display_name=display_name)
 
     def __str__(self) -> str:
         """Serialize the SIP address to a string."""

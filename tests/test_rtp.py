@@ -1,7 +1,6 @@
 import itertools
 import random
 import socket
-import threading
 import time
 from collections import namedtuple, defaultdict
 
@@ -15,7 +14,7 @@ from sibilant.rtp import (
     RTPMediaProfiles,
     RTPPacketsStats,
 )
-from tests.conftest import Dest
+from .conftest import Dest, MockServer
 
 
 class TestRTPPackets:
@@ -26,7 +25,7 @@ class TestRTPPackets:
             pass  # TODO: asserts
 
 
-def _streams_iterator(packets):
+def _streams_iterator(packets, skip_payload_types=(96, 101)):
     """
     Iterate over packets, parse into RTPPackets, yield as long as
     they're from the same stream. Return a new (chained) iterator once
@@ -35,12 +34,15 @@ def _streams_iterator(packets):
 
     def _packets_iterator():
         nonlocal packets
-        last_ssrc = None
+        last_packet = None
         for packet in packets:
             rtp_packet = RTPPacket.parse(packet.data)
-            if last_ssrc is None:
-                last_ssrc = rtp_packet.ssrc
-            if rtp_packet.ssrc != last_ssrc:
+            if rtp_packet.payload_type.payload_type in skip_payload_types:
+                rtp_packet.payload = b"\x00" * len(last_packet.payload)
+                rtp_packet.payload_type = last_packet.payload_type
+            if last_packet is None:
+                last_packet = rtp_packet
+            if rtp_packet.ssrc != last_packet.ssrc:
                 packets = itertools.chain([packet], packets)
                 return
             yield rtp_packet
@@ -217,54 +219,18 @@ class TestRTPStreamBuffer:
     #
 
 
-class MockRTPServer:
+class MockRTPServer(MockServer):
     """Small mock UDP RTP server, opens up a connection and sends/recvs RTP packets."""
 
-    def __init__(self, packets_iterator, server_address, client_address):
-        self.packets_iterator = packets_iterator
-        self.server_address = server_address
-        self.client_address = client_address
-
-        self.socket = None
-        self.send_thread = None
-        self.recv_thread = None
-        self.stop_event = threading.Event()
-
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.recv_stats = RTPPacketsStats()
         self.send_stats = RTPPacketsStats()
 
-    def start(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.setblocking(False)
-        self.socket.bind(self.server_address)
-
-        self.send_thread = threading.Thread(target=self._run_send)
-        self.recv_thread = threading.Thread(target=self._run_recv)
-        self.stop_event.clear()
-        self.send_thread.start()
-        self.recv_thread.start()
-
-    def _run_send(self):
-        while not self.stop_event.is_set():
-            try:
-                packet = next(self.packets_iterator)
-            except StopIteration:
-                break
-            else:
-                with self.send_stats.track(packet):
-                    self.send(packet)
-                # FIXME: if we don't wait, we lose packets. Can we fix?
-                time.sleep(
-                    1e-6
-                )
-
     def send(self, packet):
         assert self.socket is not None
-        self.socket.sendto(packet.serialize(), self.client_address)
-
-    def _run_recv(self):
-        while not self.stop_event.is_set():
-            self.recv()
+        with self.send_stats.track(packet):
+            self.socket.sendto(packet.serialize(), self.client_address)
 
     def recv(self):
         pre_time_ns = time.perf_counter_ns()
@@ -278,25 +244,10 @@ class MockRTPServer:
             self.recv_stats.add(packet, (post_time_ns - pre_time_ns) / 1e9)
             return data
 
-        time.sleep(1e-6)
-
-    def stop(self):
-        self.stop_event.set()
-        self.send_thread.join()
-        self.recv_thread.join()
-        self.socket.close()
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.stop()
-
 
 class TestRTPClient:
     """
-    Test RTPClient class. Start an asyncio loop, a mock server,
+    Test RTPClient class. Start mock server,
     and check that the client sends and receives the packets correctly.
     """
 
@@ -341,17 +292,19 @@ class TestRTPClient:
             if first_packet.payload_type.payload_type not in test_profiles:
                 return
             client_packets = itertools.chain([first_packet], client_packets)
-        server = MockRTPServer(server_packets, server_address, client_address)
+        server = MockRTPServer(
+            server_packets, server_address, client_address, send_delay=2e-3
+        )
         client = RTPClient(
             client_address,
             server_address,
             media_formats=test_profiles,
-            send_delay_factor=1e-6,
+            send_delay_factor=2e-3,
         )
         with client, server:
             for packet in client_packets:
                 client.write(packet.serialize())
-                time.sleep(1e-4)
+                time.sleep(2e-3)
             time.sleep(1e-1)  # wait for the last packets to be sent
             server.send_thread.join()
             time.sleep(1e-1)  # wait for the last packets to be recv'd

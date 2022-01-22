@@ -407,8 +407,14 @@ class RTPClient:
         self._send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # TODO: name threads
-        self._recv_thread = threading.Thread(target=self._recv_loop)
-        self._send_thread = threading.Thread(target=self._send_loop)
+        self._recv_thread = threading.Thread(
+            target=self._recv_loop,
+            name=f"{self.__class__.__name__}._recv_loop-{id(self)}",
+        )
+        self._send_thread = threading.Thread(
+            target=self._send_loop,
+            name=f"{self.__class__.__name__}._send_loop-{id(self)}",
+        )
 
         self._recv_thread.start()
         self._send_thread.start()

@@ -57,3 +57,6 @@ __license__ = _get_metadata(
     "License",
     lambda t: t["project"]["license"]["text"],
 )
+
+
+# TODO: fix __all__ in all modules, or see if there's better options / linters

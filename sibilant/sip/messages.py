@@ -607,7 +607,7 @@ class SIPMessage(ABC):
             body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body)
         except Exception as e:
-            raise SIPParseError("Failed to parse SIP message") from e
+            raise SIPParseError(f"Failed to parse SIP message: {e}") from e
 
     @classmethod
     @abstractmethod

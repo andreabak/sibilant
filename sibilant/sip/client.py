@@ -12,6 +12,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import replace as dataclass_replace
+from functools import partial
 from typing import (
     Optional,
     Tuple,
@@ -23,6 +24,9 @@ from typing import (
     Mapping,
     List,
     Set,
+    Callable,
+    Any,
+    Coroutine,
 )
 
 from ..helpers import SupportsStr
@@ -32,7 +36,7 @@ try:
 except ImportError:
     from typing_extensions import Self
 
-from .. import __init__ as sibilant
+import sibilant
 from .. import sdp, rtp
 from ..constants import DEFAULT_SIP_PORT
 from ..exceptions import (
@@ -75,12 +79,12 @@ def generate_cseq() -> int:
 
 
 # coro that waits for a response to a request, handling and discarding TRYING messages
-async def discard_trying(get_request: Awaitable[SIPMessage]) -> SIPMessage:
+async def discard_trying(msg_getter: Callable[[], Awaitable[SIPMessage]]) -> SIPMessage:
     """Await for the next response, ignoring TRYING responses."""
     # TODO: if you do the wait within here, you could log the trying messages received while waiting for the response
     trying_count = 0
     while True:
-        message: SIPMessage = await get_request
+        message: SIPMessage = await msg_getter()
         if isinstance(message, SIPResponse) and message.status == SIPStatus.TRYING:
             trying_count += 1
             continue
@@ -91,10 +95,14 @@ async def discard_trying(get_request: Awaitable[SIPMessage]) -> SIPMessage:
 _rT = TypeVar("_rT")
 
 
-async def call_later(delay: float, coro: Awaitable[_rT]) -> _rT:
+async def call_later(delay: float, coro: Coroutine[_rT]) -> _rT:
     """Call a coroutine after a delay."""
-    await asyncio.sleep(delay)
-    return await coro
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        coro.close()
+    else:
+        return await coro
 
 
 async def cancel_task_silent(task: asyncio.Task) -> None:
@@ -109,7 +117,7 @@ async def cancel_task_silent(task: asyncio.Task) -> None:
 
 
 # TODO: move this to a separate module, probably rename
-class AbtractVoIPPhone(ABC):
+class AbstractVoIPPhone(ABC):
     @property
     @abstractmethod
     def can_accept_calls(self) -> bool:
@@ -174,6 +182,15 @@ class SIPDialogue(ABC):
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
         self._expecting_msg: bool = False
 
+        self._closed: bool = False
+
+        self._client.track_dialogue(self)
+
+    @property
+    def client(self) -> SIPClient:
+        """The client associated to dialogue."""
+        return self._client
+
     @property
     def call_id(self) -> str:
         """The Call-ID for this dialogue."""
@@ -184,12 +201,27 @@ class SIPDialogue(ABC):
         """The CSeq for this dialogue."""
         return self._cseq
 
+    @property
+    def closed(self) -> bool:
+        """
+        Whether this dialogue is closed / has ended.
+        The client should not be tracking it anymore,
+        effectively rejecting any new messages related to it.
+        """
+        return self._closed
+
+    def _close(self) -> None:
+        """Close this dialogue."""
+        self._client.untrack_dialogue(self)
+        self._closed = True
+
     async def receive_message(self, message: SIPMessage) -> None:
         if self._expecting_msg:
             # Put the message in the queue, and whatever is awaiting will get it
             if not self._recv_queue.empty():
                 _logger.warning(
-                    "Received response while still processing previous ones"
+                    "Received message while still processing "
+                    f"{self._recv_queue.qsize()} previous ones"
                 )
 
             self._recv_queue.put_nowait(message)
@@ -205,14 +237,14 @@ class SIPDialogue(ABC):
     async def _wait_for_message(
         self, timeout: Optional[float] = 32.0, ignore_trying: bool = True
     ) -> SIPMessage:
-        msg_get_coro = self._recv_queue.get()
+        msg_getter: Callable[[], Awaitable[SIPMessage]] = self._recv_queue.get
         if ignore_trying:
-            msg_get_coro = discard_trying(msg_get_coro)
+            msg_getter = partial(discard_trying, msg_getter)
         if timeout is not None:
-            msg_get_coro = asyncio.wait_for(msg_get_coro, timeout)
+            msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
         self._expecting_msg = True
         try:
-            return await msg_get_coro
+            return await msg_getter()
         finally:
             self._expecting_msg = False
 
@@ -295,7 +327,7 @@ class SIPRegistration(SIPDialogue):
 
         return self._generate_request(SIPMethod.REGISTER, extra_headers=extra_headers)
 
-    async def _register_flow(self, deregister: bool = False) -> None:
+    async def _register_transaction(self, deregister: bool = False) -> None:
         authorization: Optional[hdr.AuthorizationHeader] = None
 
         response: Optional[SIPMessage] = None
@@ -327,6 +359,11 @@ class SIPRegistration(SIPDialogue):
                     "REGISTER failed: server replied with 400 Bad Request"
                 )
 
+            elif (
+                400 <= int(response.status) <= 499 or 600 <= int(response.status) <= 699
+            ):
+                raise SIPException(f"REGISTER failed: {response!r}")
+
             elif response.status == SIPStatus.OK:
                 return  # all good, exit flow
 
@@ -338,31 +375,39 @@ class SIPRegistration(SIPDialogue):
             + (f"\nLast response: {response!r}" if response is not None else "")
         )
 
-    def _schedule_keep_alive(self):
-        self._cancel_keep_alive()
-        keep_alive_interval: float = (
-            self._client.register_expires - self._client.register_timeout
+    async def _schedule_keep_alive(self):
+        await self._cancel_keep_alive()
+        keep_alive_interval: float = max(
+            0.0, self._client.register_expires - self._client.register_timeout
         )
         self._keep_alive_task = asyncio.create_task(
-            call_later(keep_alive_interval, self.register())
+            call_later(keep_alive_interval, self.register()),
+            name=f"{self.__class__.__name__}.keep_alive-{id(self._client)} task",
         )
 
-    def _cancel_keep_alive(self):
+    async def _cancel_keep_alive(self):
         if self._keep_alive_task is not None:
-            self._keep_alive_task.cancel()
+            await cancel_task_silent(self._keep_alive_task)
             self._keep_alive_task = None
 
     async def register(self):
-        await self._register_flow()
-        self._registered = True
-        self._schedule_keep_alive()
-
-    async def deregister(self):
-        self._cancel_keep_alive()
         try:
-            await self._register_flow(deregister=True)
+            await self._register_transaction()
+        except Exception:
+            self._registered = False
+            self._close()
+            raise
+        self._registered = True
+        await self._schedule_keep_alive()
+
+    async def deregister(self, send_expires: bool = True):
+        await self._cancel_keep_alive()
+        try:
+            if send_expires:
+                await self._register_transaction(deregister=True)
         finally:
             self._registered = False
+            self._close()
 
 
 # TODO: we might not need all of these states, because some are intermediate and
@@ -391,7 +436,6 @@ class CallState(enum.Enum):
 
 
 class SIPCall(SIPDialogue):
-    # TODO: this class must be able to handle sessions initiaded by either side
     def __init__(
         self,
         client: SIPClient,
@@ -454,7 +498,12 @@ class SIPCall(SIPDialogue):
         """Handle an incoming SIP message, and start the appropriate flow"""
         if isinstance(message, SIPRequest):
             if message.method == SIPMethod.INVITE:
-                return await self._invite_recv_transaction(message)
+                try:
+                    return await self._invite_recv_transaction(message)
+                except Exception:
+                    self._state = CallState.FAILED
+                    self._close()
+                    raise
             elif message.method == SIPMethod.BYE:
                 return await self._bye_recv_transaction(message)
 
@@ -478,13 +527,20 @@ class SIPCall(SIPDialogue):
 
         if not self._client.phone.can_accept_calls:
             await self._reply_busy(invite)
+            self._close()
             return
 
         await self._reply_ringing(invite)
 
         # we now wait for the phone to answer, or for a CANCEL request, whatever comes first
-        incoming_request = asyncio.create_task(self._wait_for_message())
-        phone_answer = asyncio.create_task(self._client.phone.answer(self))
+        incoming_request = asyncio.create_task(
+            self._wait_for_message(),
+            name=f"{self.__class__.__name__}._wait_for_message-{self._call_id} task",
+        )
+        phone_answer = asyncio.create_task(
+            self._client.phone.answer(self),
+            name=f"{self.__class__.__name__}._client.phone.answer-{self._call_id} task",
+        )
         done, pending = await asyncio.wait(
             [incoming_request, phone_answer], return_when=asyncio.FIRST_COMPLETED
         )
@@ -492,9 +548,13 @@ class SIPCall(SIPDialogue):
             await cancel_task_silent(phone_answer)
 
             request: SIPMessage = incoming_request.result()
-            if isinstance(request, SIPRequest) and request.method in (SIPMethod.CANCEL, SIPMethod.BYE):
+            if isinstance(request, SIPRequest) and request.method in (
+                SIPMethod.CANCEL,
+                SIPMethod.BYE,
+            ):
                 self._follow_cseq(request)
                 await self._reply_terminated(request)
+                self._close()
                 return
             # TODO: catch exceptions raised and set CallState.FAILED, send something back?
             raise SIPBadResponse(
@@ -570,6 +630,7 @@ class SIPCall(SIPDialogue):
         await self._reply_ok(bye)
 
         self._state = CallState.HUNG_UP
+        self._close()
 
     async def _bye_send_transaction(self) -> None:
         """Start an outgoing BYE request, wait for 200 OK (or silent timeout)."""
@@ -591,6 +652,7 @@ class SIPCall(SIPDialogue):
             pass
         finally:
             self._state = CallState.HUNG_UP
+            self._close()
 
     def _generate_sdp_session(
         self,
@@ -746,7 +808,7 @@ class SIPClient:
 
     def __init__(
         self,
-        phone: AbtractVoIPPhone,
+        phone: AbstractVoIPPhone,
         username: str,
         password: str,
         server_host: str,
@@ -754,14 +816,15 @@ class SIPClient:
         display_name: Optional[str] = None,
         login: Optional[str] = None,
         domain: Optional[str] = None,
-        local_ip: str = "0.0.0.0",
+        local_host: str = "0.0.0.0",
         local_port: int = 0,
-        register_attempts: int = 3,
+        register_attempts: int = 5,
         register_timeout: float = 30.0,
         register_expires: int = 3600,
+        skip_deregister: bool = True,
         max_forwards: int = 70,
     ):
-        self._phone: AbtractVoIPPhone = phone
+        self._phone: AbstractVoIPPhone = phone
 
         self._username: str = username
         self._login: str = (login is not None and login) or username
@@ -770,13 +833,14 @@ class SIPClient:
         self._domain: str = (domain is not None and domain) or server_host
 
         self._server_addr: Tuple[str, int] = (server_host, server_port)
-        self._local_addr: Tuple[str, int] = (local_ip, local_port)
+        self._local_addr: Tuple[str, int] = (local_host, local_port)
 
         self._max_forwards: int = max_forwards
 
         self._register_attempts: int = register_attempts
         self._register_timeout: float = register_timeout
         self._register_expires: int = register_expires
+        self._skip_deregister: bool = skip_deregister
         self._register_dialogue: Optional[SIPRegistration] = None
 
         self._dialogues: MutableMapping[str, SIPDialogue] = {}
@@ -784,8 +848,10 @@ class SIPClient:
 
         self._event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._event_loop)
+        self._event_loop.set_exception_handler(self._handle_loop_exception)
         self._event_loop_thread: threading.Thread = threading.Thread(
-            target=self._run_event_loop
+            target=self._run_event_loop,
+            name=f"{self.__class__.__name__}._run_event_loop-{id(self)}",
         )
 
         # FIXME: wouldn't it be easier to use async to handle dialogues / callbacks?
@@ -803,7 +869,7 @@ class SIPClient:
         self._closing_event.clear()
 
     @property
-    def phone(self) -> AbtractVoIPPhone:
+    def phone(self) -> AbstractVoIPPhone:
         return self._phone
 
     @property
@@ -876,10 +942,20 @@ class SIPClient:
     def registered(self) -> bool:
         return bool(self._register_dialogue and self._register_dialogue.registered)
 
-    def _track_dialogue(self, dialogue: SIPDialogue):
+    @property
+    def calls(self) -> Mapping[str, SIPDialogue]:
+        return {
+            call_id: dialogue
+            for call_id, dialogue in self._dialogues.items()
+            if isinstance(dialogue, SIPCall)
+        }
+
+    def track_dialogue(self, dialogue: SIPDialogue):
+        assert dialogue.call_id not in self._dialogues
+        assert dialogue.client is self
         self._dialogues[dialogue.call_id] = dialogue
 
-    def _untrack_dialogue(
+    def untrack_dialogue(
         self, dialogue: Optional[SIPDialogue], call_id: Optional[str] = None
     ):
         if dialogue is None and call_id is None:
@@ -892,40 +968,79 @@ class SIPClient:
         del self._dialogues[call_id]
 
     def start(self):
-        if self._socket is not None:
-            raise RuntimeError("SIP client already started")
+        try:
+            if self._socket is not None:
+                raise RuntimeError("SIP client already started")
 
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._socket.setblocking(False)
-        self._socket.bind(self._local_addr)
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._socket.setsockopt(
+                socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024
+            )
+            self._socket.setblocking(False)
+            self._socket.bind(self._local_addr)
 
-        # TODO: name threads
-        self._recv_thread = threading.Thread(target=self._recv_loop)
-        self._recv_thread.start()
+            # TODO: name threads
+            self._recv_thread = threading.Thread(
+                target=self._recv_loop,
+                name=f"{self.__class__.__name__}._recv_loop-{id(self)}",
+            )
+            self._recv_thread.start()
 
-        self._event_loop_thread.start()
+            self._event_loop_thread.start()
 
-        self._register()
+            self._register()
+
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self):
-        self._deregister()
+        if self.registered:
+            self._deregister()
 
-        self._event_loop.stop()  # TODO: check if all tasks/futures are done?
-        self._event_loop_thread.join()
+        self._event_loop.call_soon_threadsafe(self._event_loop.stop)
+        if self._event_loop_thread.is_alive():
+            self._event_loop_thread.join()
 
         self._closing_event.set()
-        self._recv_thread.join()
-        self._socket.close()
+        if self._recv_thread is not None and self._recv_thread.is_alive():
+            self._recv_thread.join()
+        if self._socket is not None:
+            self._socket.close()
 
         self._socket = None
         self._recv_thread = None
         self._closed = True
         self._closing_event.clear()
 
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
     def _run_event_loop(self):
         asyncio.set_event_loop(self._event_loop)
-        self._event_loop.run_forever()
-        # TODO: we need a monitor task or here to check if something failed
+        try:
+            self._event_loop.run_forever()
+        finally:
+            self._event_loop.run_until_complete(self._event_loop.shutdown_asyncgens())
+            self._event_loop.close()
+
+        # TODO: we need a monitor task or here to check if something failed?
+
+    def _handle_loop_exception(
+        self, loop: asyncio.AbstractEventLoop, context: Mapping[str, Any]
+    ):
+        """Handle exceptions in the event loop by logging as error."""
+        message: str = (
+            f"Exception in event loop: {context['message']}\nContext: {context!r}"
+        )
+        if _logger.getEffectiveLevel() <= logging.DEBUG:
+            _logger.exception(message, exc_info=context.get("exception"))
+        else:
+            _logger.error(message)
 
     def _schedule(self, coro) -> asyncio.Future:
         return asyncio.run_coroutine_threadsafe(coro, self._event_loop)
@@ -946,14 +1061,15 @@ class SIPClient:
             if not timeout:
                 break
 
-            time.sleep(1e-4)
-
         raise SIPTimeout("Timed out waiting for SIP message")
 
     def _recv_loop(self):
         while not self._closing_event.is_set():
             try:
                 message = self._recv_msg()
+
+            except SIPTimeout:
+                pass
 
             except SIPUnsupportedVersion:
                 pass  # TODO: implement. Send a not supported message?
@@ -964,7 +1080,7 @@ class SIPClient:
             else:
                 self._schedule(self._handle_message(message))
 
-            time.sleep(1e-4)
+            time.sleep(1e-6)
 
     async def _handle_message(self, message: SIPMessage):
         call_id_hdr: Optional[hdr.CallIDHeader] = message.headers.get("Call-ID")
@@ -997,25 +1113,27 @@ class SIPClient:
             raise RuntimeError("Registration already active")
 
         self._register_dialogue: Optional[SIPRegistration] = SIPRegistration(self)
-        self._track_dialogue(self._register_dialogue)
 
         self._schedule(self._register_dialogue.register()).result()  # wait
+        _logger.debug(f"Registered with {self.server_host} with user {self._username}")
 
     def _deregister(self):
         if self._register_dialogue is None:
             raise RuntimeError("Registration not active")
 
         try:
-            self._schedule(self._register_dialogue.deregister()).result()  # wait
+            self._schedule(self._register_dialogue.deregister(send_expires=not self._skip_deregister)).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
+
+    # TODO: start invite
 
     async def _handle_invite(self, message: SIPRequest):
         # TODO: check if the call is for us
 
-        # TODO: callback or something to let the user know about the call / accept it
-        call = SIPCall.from_invite(self, message)
-        self._track_dialogue(call)
+        # TODO: sanity check the message has From etc.
+        _logger.debug(f"Received INVITE {message.headers['From']}: {message!r}")
+        SIPCall.from_invite(self, message)
 
     def prepare_headers(
         self,
