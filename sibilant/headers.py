@@ -2,57 +2,35 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, fields as dataclass_fields
-from typing import ClassVar, Union, Dict, Type, Pattern, List, Optional
+from dataclasses import fields as dataclass_fields
+from typing import ClassVar, Union, Dict, Type, Optional
 
 try:
     from typing import Self
 except ImportError:
     from typing_extensions import Self
 
-from .helpers import CaseInsensitiveDict
+from .helpers import CaseInsensitiveDict, StrValueMixin, IntValueMixin, ListValueMixin, Registry, DEFAULT, dataclass
 from .constants import DEFAULT_SIP_PORT
 from .structures import SIPAddress
 from .exceptions import SIPParseError
 
 
-class _DEFAULT:
-    """Comparable and hashable sentinel for DEFAULT values"""
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, _DEFAULT)
-
-    def __hash__(self) -> int:
-        return hash((self.__class__, id(self)))
-
-    def __repr__(self) -> str:
-        return "DEFAULT"
-
-
-DEFAULT = _DEFAULT()
-
-
-class Header(ABC):
-    _name: ClassVar[Union[str, DEFAULT]]
-    _known_headers: ClassVar[Dict[Union[str, DEFAULT], Type[Header]]] = {}
-
-    def __init_subclass__(cls, **kwargs):
-        # make sure name is set and register the class into known headers
-        if ABC not in cls.__bases__ and not getattr(cls, "_name", None):
-            raise ValueError(f"Header class {cls} must have a _name attribute")
-
-        if existing_cls := cls._known_headers.get(cls._name):
-            raise ValueError(f"Header class {cls} has a name that is already used by {existing_cls}")
-
-        cls._known_headers[cls._name] = cls
+class Header(Registry[Union[str, type(DEFAULT)], "Header"], ABC, registry=True, registry_attr="_name"):
+    _name: ClassVar[Union[str, type(DEFAULT)]]
 
     @property
     def name(self) -> str:
         """The name of the header."""
         return self._name
 
+    @property
+    def raw_value(self) -> str:
+        """The raw value of the header."""
+        return self.serialize()
+
     @classmethod
-    def parse(cls, header: str, value: str, previous_headers: Headers) -> Header:
+    def parse(cls, header: str, value: str, previous_headers: Headers) -> Self:
         """
         Parse a raw header into a header object, picking the correct class.
 
@@ -61,10 +39,10 @@ class Header(ABC):
         :param previous_headers: the previous headers that have been already parsed
         :return: the new header object
         """
-        known_header: bool = header in cls._known_headers
-        if not known_header and DEFAULT not in cls._known_headers:
+        known_header: bool = header in cls.__registry__
+        if not known_header and DEFAULT not in cls.__registry__:
             raise TypeError(f"Unknown header {header}, and no default header class is defined")
-        header_cls: Type[Header] = cls._known_headers[header if known_header else DEFAULT]
+        header_cls: Type[Header] = cls.__registry_get_class_for__(header if known_header else DEFAULT)
         return header_cls.from_raw_value(header, value, previous_headers)
 
     @classmethod
@@ -81,11 +59,7 @@ class Header(ABC):
 
     @abstractmethod
     def serialize(self) -> str:
-        """
-        Serialize the header value to a string.
-
-        :return: The serialized header value string.
-        """
+        """Serialize the header value to a string."""
 
     def __str__(self) -> str:
         """Serialize the entire header to a string."""
@@ -93,15 +67,10 @@ class Header(ABC):
 
 
 @dataclass(slots=True)
-class StrHeader(Header, ABC):
-    value: str
-
+class StrHeader(StrValueMixin, Header, ABC):
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        return cls(value=value)
-
-    def serialize(self) -> str:
-        return self.value
+        return cls(**cls.parse_raw_value(value))
 
 
 @dataclass(slots=True)
@@ -120,43 +89,16 @@ class UnknownHeader(StrHeader):
 
 
 @dataclass(slots=True)
-class IntHeader(Header, ABC):
-    value: int
-
+class IntHeader(IntValueMixin, Header, ABC):
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        return cls(value=int(value))
-
-    def serialize(self) -> str:
-        return str(self.value)
+        return cls(**cls.parse_raw_value(value))
 
 
-@dataclass(slots=True)
-class ListHeader(Header, ABC):
-    _separator: ClassVar[str] = ", "
-    _splitter: ClassVar[Union[str, Pattern[str], None]] = re.compile(r"\s*,\s*")
-
-    values: List[str]
-    raw_value: Optional[str] = None
-
-    def __post_init__(self):
-        if self.raw_value is None:
-            self.raw_value = self._separator.join(self.values)
-
+class ListHeader(ListValueMixin, Header, ABC):
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        value = value.strip()
-        splitter = cls._splitter or cls._separator
-        if isinstance(splitter, str):
-            values = value.split(splitter)
-        elif isinstance(splitter, Pattern):
-            values = splitter.split(value)
-        else:
-            raise TypeError(f"Invalid splitter for {cls.__name__}: {splitter!r}")
-        return cls(values=values, raw_value=value)
-
-    def serialize(self) -> str:
-        return self.raw_value
+        return cls(**cls.parse_raw_value(value))
 
 
 @dataclass(slots=True)

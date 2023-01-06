@@ -15,9 +15,29 @@ class SIPMessageException(SIPException, IOError):
         super().__init__(*args, **kwargs)
 
 
-class SIPUnsupportedVersion(SIPMessageException, NotImplementedError):
-    """The SIP version is not supported by this server."""
+class SIPUnsupportedError(SIPMessageException, NotImplementedError):
+    """Exception raised when a SIP message or feature is not supported."""
+
+
+class SIPUnsupportedVersion(SIPUnsupportedError):
+    """The SIP version is not supported by this library."""
 
 
 class SIPParseError(SIPException, ValueError):
     """Exceptions related to SIP messages / data parsing."""
+
+
+class SDPException(SIPException):
+    """Base class for all exceptions raised by the SDP module."""
+
+
+class SDPUnsupportedVersion(SDPException, NotImplementedError):
+    """The SDP version is not supported by this library."""
+
+
+class SDPParseError(SIPParseError):
+    """Exception related to SDP data parsing."""
+
+
+class SDPUnknownFieldError(SDPParseError):
+    """Exception raised when an unknown SDP field is encountered."""

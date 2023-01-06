@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 try:
@@ -10,10 +9,12 @@ try:
 except ImportError:
     from typing_extensions import Self
 
+from .helpers import dataclass
 from .constants import SUPPORTED_SIP_VERSIONS
-from .exceptions import SIPUnsupportedVersion, SIPParseError
+from .exceptions import SIPUnsupportedVersion, SIPParseError, SIPUnsupportedError
 from .structures import SIPURI
 from .headers import Headers
+from .sdp import SDPSession
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,9 +28,14 @@ class Method:
 
 class SIPMethod(enum.Enum):
     def __new__(cls, value: Method) -> SIPMethod:
-        obj = super().__new__(cls, value)
+        obj = object.__new__(cls)
         obj._value_ = value.name
+        obj._real_value = value
         return obj
+
+    @property
+    def value(self) -> Method:
+        return self._real_value
 
     def __str__(self) -> str:
         return str(self.value)
@@ -119,9 +125,14 @@ class StatusCode:
 
 class SIPStatus(enum.Enum):
     def __new__(cls, value: StatusCode) -> SIPStatus:
-        obj = super().__new__(cls, value)
+        obj = object.__new__(cls)
         obj._value_ = value.code
+        obj._real_value = value
         return obj
+
+    @property
+    def value(self) -> StatusCode:
+        return self._real_value
 
     def __int__(self) -> int:
         return int(self.value)
@@ -600,15 +611,15 @@ class SIPStatus(enum.Enum):
 
 
 class SIPMessage(ABC):
-    def __init__(
-        self, version: str, headers: Headers, body: Optional[SDPSession]
-    ):
+    def __init__(self, version: str, headers: Headers, body: Optional[SDPSession]):
         if version not in SUPPORTED_SIP_VERSIONS:
             raise SIPUnsupportedVersion(f"Unsupported SIP version: {version}")
 
         self.version: str = version
         self.headers: Headers = headers
-        self.body: Optional[SDPSession] = body
+        self.body: Any = body
+
+        self.sdp: Optional[SDPSession] = self.body if isinstance(self.body, SDPSession) else None
 
     @property
     @abstractmethod
@@ -618,11 +629,12 @@ class SIPMessage(ABC):
     @classmethod
     def parse(cls, data: bytes) -> Self:
         try:
-            headers_raw, body_raw = data.split(b"\r\n\r\n", 1)
+            headers_raw, *rest = data.split(b"\r\n\r\n", 1)
+            body_raw = rest[0] if rest else b""
             start_line, headers_fields = headers_raw.split(b"\r\n", 1)
             start_line_kwargs: Dict[str, Any] = cls._parse_start_line(start_line)
             headers: Headers = Headers.parse(headers_fields)
-            body: Optional[SDPSession] = cls._parse_body(headers, body_raw)
+            body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body)
         except Exception as e:
             raise SIPParseError("Failed to parse SIP message") from e
@@ -633,15 +645,24 @@ class SIPMessage(ABC):
         """Parse start line of the SIP message, return appropriate kwargs for init."""
 
     @classmethod
-    def _parse_body(cls, headers: Headers, body: bytes) -> Optional[SDPSession]:
+    def _parse_body(cls, headers: Headers, body: bytes) -> Any:
         """Parse body of the SIP message. It's expected to be an SDP session, or empty."""
-        body_raw: str = body.decode("utf-8").strip()
-        if not body_raw:
+        if "Content-Encoding" in headers:
+            raise SIPUnsupportedError("Encoded SIP content is not supported")
+
+        if "Content-Type" not in headers or not int(headers.get("Content-Length")):
             return None
-        return SDPSession.parse(body_raw)
+        content_type = headers["Content-Type"].raw_value
+
+        if content_type == "application/sdp":
+            if not body.strip():
+                return None
+            return SDPSession.parse(body)
+        else:
+            return body
 
     def __str__(self) -> str:
-        return f"{self.start_line}\r\n{self.headers}\r\n\r\n{self.body}"
+        return f"{self.start_line}\r\n{self.headers}\r\n\r\n{self.body or ''}"
 
 
 class SIPRequest(SIPMessage):
