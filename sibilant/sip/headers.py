@@ -3,20 +3,59 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import fields as dataclass_fields
-from typing import ClassVar, Union, Dict, Type, Optional
+from typing import ClassVar, Union, Dict, Type, Optional, TYPE_CHECKING, TypeVar
 
 try:
     from typing import Self
 except ImportError:
     from typing_extensions import Self
 
-from .helpers import CaseInsensitiveDict, StrValueMixin, IntValueMixin, ListValueMixin, Registry, DEFAULT, dataclass
-from .constants import DEFAULT_SIP_PORT
-from .structures import SIPAddress
-from .exceptions import SIPParseError
+from ..helpers import (
+    CaseInsensitiveDict,
+    StrValueMixin,
+    IntValueMixin,
+    ListValueMixin,
+    Registry,
+    DEFAULT,
+    dataclass,
+)
+from ..constants import DEFAULT_SIP_PORT
+from ..structures import SIPAddress
+from ..exceptions import SIPParseError
+
+if TYPE_CHECKING:
+    from dataclasses import dataclass
 
 
-class Header(Registry[Union[str, type(DEFAULT)], "Header"], ABC, registry=True, registry_attr="_name"):
+__all__ = [
+    "Header",
+    "StrHeader",
+    "UnknownHeader",
+    "IntHeader",
+    "ListHeader",
+    "ViaHeader",
+    "FromToHeader",
+    "FromHeader",
+    "ToHeader",
+    "CSeqHeader",
+    "AllowHeader",
+    "SupportedHeader",
+    "ContentLengthHeader",
+    "AuthorizationHeader",
+    "WWWAuthenticateHeader",
+    "Headers",
+]
+
+
+_H = TypeVar("_H", bound="Header")
+
+
+class Header(
+    Registry[Union[str, type(DEFAULT)], "Header"],
+    ABC,
+    registry=True,
+    registry_attr="_name",
+):
     _name: ClassVar[Union[str, type(DEFAULT)]]
 
     @property
@@ -41,8 +80,12 @@ class Header(Registry[Union[str, type(DEFAULT)], "Header"], ABC, registry=True, 
         """
         known_header: bool = header in cls.__registry__
         if not known_header and DEFAULT not in cls.__registry__:
-            raise TypeError(f"Unknown header {header}, and no default header class is defined")
-        header_cls: Type[Header] = cls.__registry_get_class_for__(header if known_header else DEFAULT)
+            raise TypeError(
+                f"Unknown header {header}, and no default header class is defined"
+            )
+        header_cls: Type[Header] = cls.__registry_get_class_for__(
+            header if known_header else DEFAULT
+        )
         return header_cls.from_raw_value(header, value, previous_headers)
 
     @classmethod
@@ -122,21 +165,31 @@ class ViaHeader(Header):
             return previous_headers["Via"]
 
         method, address, *params = re.split(r"\s+|\s*;\s*", value.strip())
-        ip, port_str = address.split(":") if ":" in address else (address, str(DEFAULT_SIP_PORT))
+        ip, port_str = (
+            address.split(":") if ":" in address else (address, str(DEFAULT_SIP_PORT))
+        )
         port = int(port_str)
         parsed_params = {}
         extension_params = {}
         for param in params:
             param_name: str
             param_value: Optional[str]
-            param_name, param_value = param.split("=", maxsplit=1) if "=" in param else (param, None)
+            param_name, param_value = (
+                param.split("=", maxsplit=1) if "=" in param else (param, None)
+            )
             if param_name in ("rport", "ttl"):
                 param_value = int(param_value) if param_value is not None else None
             if param_name in ("branch", "maddr", "received", "rport", "ttl"):
                 parsed_params[param_name] = param_value
             else:
                 extension_params[param_name] = param_value
-        return cls(method=method, address=ip, port=port, **parsed_params, extension=extension_params or None)
+        return cls(
+            method=method,
+            address=ip,
+            port=port,
+            **parsed_params,
+            extension=extension_params or None,
+        )
 
     def serialize(self) -> str:
         params = [
@@ -145,7 +198,10 @@ class ViaHeader(Header):
             if (param_value := getattr(self, param_name)) is not None
         ]
         if self.extension:
-            params.extend(f"{param_name}={param_value}" for param_name, param_value in self.extension.items())
+            params.extend(
+                f"{param_name}={param_value}"
+                for param_name, param_value in self.extension.items()
+            )
         return f"{self.method} {self.address}:{self.port} {';'.join(params)}"
 
 
@@ -237,11 +293,18 @@ class AuthorizationHeader(Header):
         # split by commas, remove whitespaces, split by equal sign, remove quotes
         params = {
             key: value.strip('"')
-            for key, value in (param.strip().split("=", maxsplit=1) for param in params.strip().split(","))
+            for key, value in (
+                param.strip().split("=", maxsplit=1)
+                for param in params.strip().split(",")
+            )
         }
         known_param_names = {f.name for f in dataclass_fields(cls)} - {"auth_params"}
-        known_params = {name: value for name, value in params.items() if name in known_param_names}
-        auth_params = {name: value for name, value in params.items() if name not in known_params}
+        known_params = {
+            name: value for name, value in params.items() if name in known_param_names
+        }
+        auth_params = {
+            name: value for name, value in params.items() if name not in known_params
+        }
         return cls(**known_params, auth_params=auth_params or None)
 
     def serialize(self) -> str:
@@ -262,7 +325,7 @@ class WWWAuthenticateHeader(AuthorizationHeader):
     _name = "WWW-Authenticate"
 
 
-class Headers(CaseInsensitiveDict[Header]):
+class Headers(CaseInsensitiveDict[_H]):
     @classmethod
     def parse(cls, raw_headers: bytes) -> Self:
         """

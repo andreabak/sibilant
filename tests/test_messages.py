@@ -3,7 +3,7 @@ from typing import List
 
 import pytest
 
-from ..messages import SIPRequest, SIPResponse
+from sibilant.sip.messages import SIPRequest, SIPResponse
 
 
 @pytest.fixture

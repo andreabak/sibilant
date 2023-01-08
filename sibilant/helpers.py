@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import enum
 import re
 import sys
 import types
 from abc import ABC
 from collections import OrderedDict
-from dataclasses import dataclass as _dtcls
+from dataclasses import dataclass as _dtcls, is_dataclass
 from functools import wraps
 from inspect import isabstract
 from typing import (
@@ -15,9 +16,90 @@ from typing import (
     Optional,
     Type,
     TypeVar,
-    cast, Mapping, ClassVar, Union, Pattern, List, Callable, get_args, get_origin,
-)
+    cast,
+    ClassVar,
+    Union,
+    Pattern,
+    List,
+    Callable,
+    get_args,
+    get_origin,
+    TYPE_CHECKING, )
 from typing import Mapping
+
+
+_dT = TypeVar("_dT")
+
+
+@wraps(_dtcls)
+def dataclass(*args, **kwargs) -> Callable[[_dT], _dT]:
+    """Wrapper for dataclasses.dataclass that adds slots if supported (py3.10+)"""
+    if sys.version_info >= (3, 10):
+        kwargs["slots"] = True
+    else:
+        kwargs.pop("slots", None)
+    return _dtcls(*args, **kwargs)
+
+
+if TYPE_CHECKING:
+    from dataclasses import dataclass
+
+
+class FieldsEnumDatatype:
+    @property
+    def enum_value(self) -> Any:
+        raise NotImplementedError("Must be overridden by getting the value from the field")
+
+
+class FieldsEnum(enum.Enum):
+    def __new__(cls, value: Any):
+        if not isinstance(value, FieldsEnumDatatype):
+            raise TypeError(f"Expected subclass of FieldsEnumType, got {type(value)}")
+        if not is_dataclass(value):
+            raise TypeError(f"Expected dataclass, got {type(value)}")
+
+        obj = object.__new__(cls)
+        obj._wrapped_value_ = value
+        obj._value_ = obj.enum_value
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped_value_, name)
+
+    def __str__(self) -> str:
+        return str(self.enum_value)
+
+    @property
+    def enum_value(self) -> Any:
+        raise NotImplementedError("Must be overridden by getting the value from the field")
+
+
+# custom enum class that's tied to a dataclass and mirrors its fields on getattr
+class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
+    """
+    Enum class that mirrors the fields on a dataclass.
+    """
+    _dataclass_: ClassVar[Type]
+
+    def __init_subclass__(cls, **kwargs):
+        """
+        Dynamically generate a dataclass from the enum definition, frozen, with slots,
+        from the __annotations__ of this class.
+        """
+        super().__init_subclass__(**kwargs)
+
+        dtcls = types.new_class(cls.__name__ + "Dataclass", bases=(FieldsEnumDatatype,))
+        dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})
+        dtcls.__module__ = cls.__module__
+        dtcls.__qualname__ = cls.__qualname__ + "Dataclass"
+        dtcls.__doc__ = cls.__doc__
+        dtcls = dataclass(frozen=True, slots=True)(dtcls)
+        cls._dataclass_ = dtcls
+
+    def __new__(cls, *args, **kwargs):
+        # create a new dataclass instance from the value
+        dtcls_value = cls._dataclass_(*args, **kwargs)
+        return FieldsEnum.__new__(cls, dtcls_value)
+
 
 _T = TypeVar("_T")
 
@@ -109,6 +191,7 @@ def try_unpack_optional_type(typ_) -> Any:
 
 class _DefaultType:
     """Comparable and hashable sentinel for DEFAULT values"""
+
     # TODO: ensure singleton
 
     def __eq__(self, other: object) -> bool:
@@ -152,7 +235,9 @@ class Registry(ABC, Generic[_ID, _RT]):
         # Create a new registry
         if registry:
             if not registry_attr:
-                raise AttributeError(f"No attr_name specified for registry class {cls.__name__}")
+                raise AttributeError(
+                    f"No attr_name specified for registry class {cls.__name__}"
+                )
             if registry_attr_label is None:
                 registry_attr_label = registry_attr
 
@@ -185,7 +270,9 @@ class Registry(ABC, Generic[_ID, _RT]):
                     f"no {cls.__registry_attr_name__} defined in the class body"
                 )
 
-            existing_registered_class: Optional[_RTc] = cls.__registry__.get(registry_id)
+            existing_registered_class: Optional[_RTc] = cls.__registry__.get(
+                registry_id
+            )
             if existing_registered_class is not None:
                 raise NameError(
                     f"More than one {cls.__registry_root__.__name__} subclass with "
@@ -213,20 +300,7 @@ class Registry(ABC, Generic[_ID, _RT]):
         registered_cls: _RTc = cls.__registry_get_class_for__(registry_id)
         # noinspection PyArgumentList
         return cast(_RT, registered_cls(*args, **kwargs))
-    
-    
-_dT = TypeVar("_dT")
 
-
-@wraps(_dtcls)
-def dataclass(*args, **kwargs) -> Callable[[_dT], _dT]:
-    """Wrapper for dataclasses.dataclass that adds slots if supported (py3.10+)"""
-    if sys.version_info >= (3, 10):
-        kwargs["slots"] = True
-    else:
-        kwargs.pop("slots", None)
-    return _dtcls(*args, **kwargs)
-    
 
 @dataclass(slots=True)
 class StrValueMixin:
@@ -281,6 +355,3 @@ class ListValueMixin:
 
     def serialize(self) -> str:
         return self.raw_value
-    
-
-
