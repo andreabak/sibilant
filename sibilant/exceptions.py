@@ -1,4 +1,12 @@
-class SIPException(Exception):
+class SibilantException(Exception):
+    """Base class for all custom library exceptions"""
+
+
+class ParseError(SibilantException, ValueError):
+    """Raised when a packet cannot be parsed"""
+
+
+class SIPException(SibilantException):
     """Base class for all exceptions raised by the SIP module."""
 
 
@@ -23,11 +31,11 @@ class SIPUnsupportedVersion(SIPUnsupportedError):
     """The SIP version is not supported by this library."""
 
 
-class SIPParseError(SIPException, ValueError):
+class SIPParseError(SIPException, ParseError):
     """Exceptions related to SIP messages / data parsing."""
 
 
-class SDPException(SIPException):
+class SDPException(SibilantException):
     """Base class for all exceptions raised by the SDP module."""
 
 
@@ -35,9 +43,17 @@ class SDPUnsupportedVersion(SDPException, NotImplementedError):
     """The SDP version is not supported by this library."""
 
 
-class SDPParseError(SIPParseError):
+class SDPParseError(SDPException, ParseError):
     """Exception related to SDP data parsing."""
 
 
 class SDPUnknownFieldError(SDPParseError):
     """Exception raised when an unknown SDP field is encountered."""
+
+
+class RTPException(SibilantException):
+    """Base class for all exceptions raised by the RTP module."""
+
+
+class RTPParseException(RTPException, ParseError):
+    """Exception related to RTP data parsing."""

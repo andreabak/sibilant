@@ -338,7 +338,7 @@ class Headers(CaseInsensitiveDict[_H]):
 
         header_lines = raw_headers.decode("utf-8").split("\r\n")
         for line in header_lines:
-            header, raw_value = line.split(": ")
+            header, raw_value = line.split(": ", maxsplit=1)
             # TODO: better handle, or warn, about duplicate headers
             headers[header] = Header.parse(header, raw_value, headers)
 

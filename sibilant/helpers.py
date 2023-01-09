@@ -27,6 +27,11 @@ from typing import (
     TYPE_CHECKING, )
 from typing import Mapping
 
+try:
+    from typing import Self
+except ImportError:
+    from typing_extensions import Self
+
 
 _dT = TypeVar("_dT")
 
@@ -51,16 +56,57 @@ class FieldsEnumDatatype:
         raise NotImplementedError("Must be overridden by getting the value from the field")
 
 
+# noinspection PyTypeChecker
 class FieldsEnum(enum.Enum):
+    __wrapped_type__: ClassVar[Type[FieldsEnumDatatype]]
+    __allow_unknown__: ClassVar[bool] = False
+    __unknown_member_name__: ClassVar[str] = "UNKNOWN"
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if getattr(cls, "__wrapped_type__", None) is None:
+            raise TypeError(f"{cls.__name__} must define __wrapped_type__")
+        if not issubclass(cls.__wrapped_type__, FieldsEnumDatatype):
+            raise TypeError(f"{cls.__name__}.__wrapped_type__ must be a subclass of {FieldsEnumDatatype.__name__}")
+
     def __new__(cls, value: Any):
-        if not isinstance(value, FieldsEnumDatatype):
-            raise TypeError(f"Expected subclass of FieldsEnumType, got {type(value)}")
+        if not isinstance(value, cls.__wrapped_type__):
+            raise TypeError(f"Expected subclass of {cls.__wrapped_type__.__name__}, got {type(value)}")
         if not is_dataclass(value):
             raise TypeError(f"Expected dataclass, got {type(value)}")
 
         obj = object.__new__(cls)
         obj._wrapped_value_ = value
-        obj._value_ = obj.enum_value
+
+        exc = None
+        for src in (obj, value):
+            try:
+                enum_value = src.enum_value
+                break
+            except (NotImplementedError, AttributeError) as exc:
+                pass
+        else:
+            assert exc is not None
+            raise exc
+
+        obj._value_ = enum_value
+        return obj
+
+    @classmethod
+    def _missing_(cls, value: Any) -> Optional[FieldsEnum]:
+        if isinstance(value, cls.__wrapped_type__):
+            try:
+                return cls(value.enum_value)
+            except Exception as e:
+                if not cls.__allow_unknown__:
+                    raise e
+
+        if not cls.__allow_unknown__:
+            return None
+
+        obj = cls.__new_member__(cls, value)
+        obj._name_ = cls.__unknown_member_name__
+        return obj
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped_value_, name)
@@ -68,37 +114,38 @@ class FieldsEnum(enum.Enum):
     def __str__(self) -> str:
         return str(self.enum_value)
 
-    @property
-    def enum_value(self) -> Any:
-        raise NotImplementedError("Must be overridden by getting the value from the field")
+
+_AUTO = types.new_class("AUTO", bases=(FieldsEnumDatatype,))  # sentinel for AutoFieldsEnum wrapped type
 
 
+# noinspection PyAbstractClass
 # custom enum class that's tied to a dataclass and mirrors its fields on getattr
 class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
     """
     Enum class that mirrors the fields on a dataclass.
     """
-    _dataclass_: ClassVar[Type]
+    __wrapped_type__ = _AUTO
 
     def __init_subclass__(cls, **kwargs):
         """
         Dynamically generate a dataclass from the enum definition, frozen, with slots,
         from the __annotations__ of this class.
         """
-        super().__init_subclass__(**kwargs)
-
         dtcls = types.new_class(cls.__name__ + "Dataclass", bases=(FieldsEnumDatatype,))
         dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})
         dtcls.__module__ = cls.__module__
         dtcls.__qualname__ = cls.__qualname__ + "Dataclass"
         dtcls.__doc__ = cls.__doc__
         dtcls = dataclass(frozen=True, slots=True)(dtcls)
-        cls._dataclass_ = dtcls
+        cls.__wrapped_type__ = dtcls
+
+        super().__init_subclass__(**kwargs)
 
     def __new__(cls, *args, **kwargs):
-        # create a new dataclass instance from the value
-        dtcls_value = cls._dataclass_(*args, **kwargs)
-        return FieldsEnum.__new__(cls, dtcls_value)
+        dtcls_value = cls.__wrapped_type__(*args, **kwargs)
+        obj = FieldsEnum.__new_member__(cls, dtcls_value)  # yes, enum metaclasses make a mess of this
+        obj._dtcls_value_ = dtcls_value
+        return obj
 
 
 _T = TypeVar("_T")
@@ -172,6 +219,7 @@ class CaseInsensitiveDict(MutableMapping[str, _T]):
         return CaseInsensitiveDict(self._store.values())
 
     def __repr__(self):
+        # noinspection PyTypeChecker
         return str(dict(self.items()))
 
 
