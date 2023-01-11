@@ -242,16 +242,16 @@ class ToHeader(FromToHeader):
 class CSeqHeader(Header):
     _name = "CSeq"
 
-    sequence_number: int
+    sequence: int
     method: str
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        sequence_number, method = value.split()
-        return cls(sequence_number=int(sequence_number), method=method)
+        sequence, method = value.split()
+        return cls(sequence=int(sequence), method=method)
 
     def serialize(self) -> str:
-        return f"{self.sequence_number} {self.method}"
+        return f"{self.sequence} {self.method}"
 
 
 @dataclass(slots=True)

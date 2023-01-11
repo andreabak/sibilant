@@ -57,3 +57,11 @@ class RTPException(SibilantException):
 
 class RTPParseException(RTPException, ParseError):
     """Exception related to RTP data parsing."""
+
+
+class RTPMismatchedStreamError(RTPException):
+    """Exception raised when a packet does not belong to the stream."""
+
+
+class RTPBrokenStreamError(RTPException):
+    """Exception raised when a stream is broken (e.g. too many packets are missing)"""

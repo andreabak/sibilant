@@ -93,23 +93,31 @@ class RTPMediaProfiles(FieldsEnum):
 
 
 @dataclass(slots=True)
-class RTPHeader:
+class RTPPacket:
+    # header
     version: int
     padding: bool
     extension: bool
     csrc_count: int
     marker: bool
     payload_type: RTPMediaProfiles
-    sequence_number: int
+    sequence: int
     timestamp: int
     ssrc: int
     csrc: List[int]
-    ext_id: Optional[int] = None
-    ext_len: Optional[int] = None
-    ext_data: Optional[bytes] = None
+    ext_id: int
+    ext_len: int
+    ext_data: bytes
+    # data
+    payload: bytes
 
     _format_u64: ClassVar[CompiledFormat] = CompiledFormat("u2b1b1u4b1u7u16u32u32")
     _ext_header_u32: ClassVar[CompiledFormat] = CompiledFormat("u16u16")
+
+    @classmethod
+    def calc_header_len(cls, csrc_count: int, extension: bool, ext_len: int) -> int:
+        extension_len: int = (cls._ext_header_u32.calcsize() // 8 + ext_len * 4 if extension else 0)
+        return cls._format_u64.calcsize() // 8 + csrc_count * 4 + extension_len
 
     @classmethod
     def parse(cls, data: bytes) -> Self:
@@ -120,7 +128,7 @@ class RTPHeader:
             csrc_count,
             marker,
             payload_type_raw,
-            sequence_number,
+            sequence,
             timestamp,
             ssrc,
         ) = cls._format_u64.unpack(data)
@@ -140,16 +148,17 @@ class RTPHeader:
                 int.from_bytes(csrc_data[i : i + 4], "big")
                 for i in range(0, len(csrc_data), 4)
             ]
-        ext_id, ext_len, ext_data = None, None, None
+        ext_id, ext_len, ext_data = 0, 0, b""
         if extension:
-            extension_offset = csrc_offset + csrc_count * 4
-            ext_data = data[extension_offset:]
-            ext_id, ext_len = cls._ext_header_u32.unpack(ext_data)
-            ext_data = ext_data[cls._ext_header_u32.calcsize() // 8 :]
-            if len(ext_data) != ext_len * 4:
-                raise RTPParseException(
-                    f"Expected {ext_len * 4} bytes of extension data, got {len(ext_data)}"
-                )
+            ext_offset = csrc_offset + csrc_count * 4
+            ext_header_len = cls._ext_header_u32.calcsize() // 8
+            ext_header_raw = data[ext_offset: ext_offset + ext_header_len]
+            ext_id, ext_len = cls._ext_header_u32.unpack(ext_header_raw)
+            ext_data_offset = ext_offset + ext_header_len
+            ext_data = data[ext_data_offset : ext_data_offset + ext_len * 4]
+
+        payload_offset = cls.calc_header_len(csrc_count, extension, ext_len)
+        payload = data[payload_offset:]
 
         return cls(
             version,
@@ -158,53 +167,38 @@ class RTPHeader:
             csrc_count,
             marker,
             payload_type,
-            sequence_number,
+            sequence,
             timestamp,
             ssrc,
             csrc,
             ext_id,
             ext_len,
             ext_data,
+            payload,
         )
 
     def serialize(self) -> bytes:
-        data = self._format_u64.pack(
+        header_data = self._format_u64.pack(
             self.version,
             self.padding,
             self.extension,
             self.csrc_count,
             self.marker,
             self.payload_type,
-            self.sequence_number,
+            self.sequence,
             self.timestamp,
             self.ssrc,
         )
         if self.csrc_count:
-            data += b"".join(int.to_bytes(csrc, 4, "big") for csrc in self.csrc)
+            header_data += b"".join(int.to_bytes(csrc, 4, "big") for csrc in self.csrc)
         if self.extension:
-            data += self._ext_header_u32.pack(self.ext_id, self.ext_len)
-            data += self.ext_data
-        return data
+            header_data += self._ext_header_u32.pack(self.ext_id, self.ext_len)
+            header_data += self.ext_data
+        return header_data + self.payload
+
+    @property
+    def header_len(self) -> int:
+        return self.calc_header_len(self.csrc_count, self.extension, self.ext_len)
 
     def __len__(self) -> int:
-        extension_len: int = (
-            self._ext_header_u32.calcsize() // 8 + len(self.ext_data)
-            if self.extension
-            else 0
-        )
-        return self._format_u64.calcsize() // 8 + self.csrc_count * 4 + extension_len
-
-
-@dataclass(slots=True)
-class RTPPacket:
-    header: RTPHeader
-    payload: bytes
-
-    @classmethod
-    def parse(cls, data: bytes) -> Self:
-        header = RTPHeader.parse(data)
-        payload = data[len(header) :]
-        return cls(header, payload)
-
-    def serialize(self) -> bytes:
-        return self.header.serialize() + self.payload
+        return self.header_len + len(self.payload)
