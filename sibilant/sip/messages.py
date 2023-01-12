@@ -113,7 +113,7 @@ class SIPStatus(AutoFieldsEnum):
         100,
         "Trying",
         "Extended search being performed may take a significant time so "
-        "a forking proxy must send a 100 Trying response.",
+        "a forking proxy must _send a 100 Trying response.",
     )
     RINGING = (
         180,
@@ -123,19 +123,19 @@ class SIPStatus(AutoFieldsEnum):
     CALL_FORWARDED = (
         181,
         "Call is Being Forwarded",
-        "Servers can optionally send this response to indicate a call is being forwarded.",
+        "Servers can optionally _send this response to indicate a call is being forwarded.",
     )
     QUEUED = (
         182,
         "Queued",
         "Indicates that the destination was temporarily unavailable, "
         "so the server has queued the call until the destination is available. "
-        "A server may send multiple 182 responses to update progress of the queue.",
+        "A server may _send multiple 182 responses to update progress of the queue.",
     )
     SESSION_PROGRESS = (
         183,
         "Session Progress",
-        "This response may be used to send extra information for a call which is still being set up.",
+        "This response may be used to _send extra information for a call which is still being set up.",
     )
     EARLY_DIALOG_TERMINATED = (
         199,
@@ -389,7 +389,7 @@ class SIPStatus(AutoFieldsEnum):
         469,
         "Bad Info Package",
         "If a SIP UA receives an INFO request associated with an Info Package that "
-        "the UA has not indicated willingness to receive, the UA MUST send a "
+        "the UA has not indicated willingness to receive, the UA MUST _send a "
         "469 response, which contains a Recv-Info header field with Info Packages "
         "for which the UA is willing to receive INFO requests.",
     )

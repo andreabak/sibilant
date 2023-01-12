@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import replace as dataclass_replace
-from typing import Union, Optional, TYPE_CHECKING, Any, ClassVar, List
+import time
+from contextlib import contextmanager
+from dataclasses import replace as dataclass_replace, field as dataclass_field
+from typing import Union, Optional, TYPE_CHECKING, Any, ClassVar, List, Iterator
 
 try:
     from typing import Self
@@ -12,7 +14,6 @@ except ImportError:
 from cbitstruct import CompiledFormat
 
 from ..helpers import FieldsEnum, dataclass, FieldsEnumDatatype
-from ..exceptions import RTPParseException
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -104,20 +105,29 @@ class RTPPacket:
     sequence: int
     timestamp: int
     ssrc: int
-    csrc: List[int]
-    ext_id: int
-    ext_len: int
-    ext_data: bytes
+    csrc: List[int] = dataclass_field(default_factory=list)
+    ext_id: int = 0
+    ext_len: int = 0
+    ext_data: bytes = b""
     # data
-    payload: bytes
+    payload: bytes = b""
 
     _format_u64: ClassVar[CompiledFormat] = CompiledFormat("u2b1b1u4b1u7u16u32u32")
     _ext_header_u32: ClassVar[CompiledFormat] = CompiledFormat("u16u16")
 
     @classmethod
     def calc_header_len(cls, csrc_count: int, extension: bool, ext_len: int) -> int:
-        extension_len: int = (cls._ext_header_u32.calcsize() // 8 + ext_len * 4 if extension else 0)
+        extension_len: int = (
+            cls._ext_header_u32.calcsize() // 8 + ext_len * 4 if extension else 0
+        )
         return cls._format_u64.calcsize() // 8 + csrc_count * 4 + extension_len
+
+    @property
+    def duration(self) -> float:
+        """Duration of the packet in seconds. Supports only PCMU and PCMA."""
+        if self.payload_type in (RTPMediaProfiles.PCMU, RTPMediaProfiles.PCMA):
+            return len(self.payload) / self.payload_type.clock_rate
+        raise NotImplementedError
 
     @classmethod
     def parse(cls, data: bytes) -> Self:
@@ -152,7 +162,7 @@ class RTPPacket:
         if extension:
             ext_offset = csrc_offset + csrc_count * 4
             ext_header_len = cls._ext_header_u32.calcsize() // 8
-            ext_header_raw = data[ext_offset: ext_offset + ext_header_len]
+            ext_header_raw = data[ext_offset : ext_offset + ext_header_len]
             ext_id, ext_len = cls._ext_header_u32.unpack(ext_header_raw)
             ext_data_offset = ext_offset + ext_header_len
             ext_data = data[ext_data_offset : ext_data_offset + ext_len * 4]
@@ -184,7 +194,7 @@ class RTPPacket:
             self.extension,
             self.csrc_count,
             self.marker,
-            self.payload_type,
+            self.payload_type.value,
             self.sequence,
             self.timestamp,
             self.ssrc,
@@ -202,3 +212,74 @@ class RTPPacket:
 
     def __len__(self) -> int:
         return self.header_len + len(self.payload)
+
+
+class RTPPacketsStats:
+    def __init__(self):
+        self.count: int = 0
+        self.bytes: int = 0
+        self.duration: int = 0
+        self.time: float = 0.0
+        self.unimplemented: int = 0
+
+    def add(self, packet: RTPPacket, elapsed: float):
+        try:
+            duration = packet.duration
+        except NotImplementedError:
+            self.unimplemented += 1
+            return
+        self.count += 1
+        self.time += elapsed
+        self.bytes += len(packet.payload)
+        self.duration += duration
+
+    @contextmanager
+    def track(self, packet: RTPPacket) -> Iterator[Self]:
+        start_time: int = time.perf_counter_ns()
+        yield self
+        end_time: int = time.perf_counter_ns()
+        self.add(packet, (end_time - start_time) / 1e9)
+
+    @property
+    def count_per_sec(self) -> float:
+        return (self.time and (self.count / self.time)) or 0
+
+    @property
+    def bytes_per_sec(self) -> float:
+        return (self.time and (self.bytes / self.time)) or 0
+
+    @property
+    def realtime_factor(self) -> float:
+        return (self.time and (self.duration / self.time)) or 0
+
+    def format(self) -> str:
+        return (
+            f"{self.count} packets, {self.bytes_per_sec/(1024**2):,.2f} MB/s, "
+            f"{self.count_per_sec:,.2f} packets/s, {self.realtime_factor:,.2f}x realtime"
+        )
+
+    def __bool__(self) -> bool:
+        return self.time > 0
+
+    def __add__(self, other) -> RTPPacketsStats:
+        if not isinstance(other, RTPPacketsStats):
+            return NotImplemented
+
+        new = RTPPacketsStats()
+        new.count = self.count + other.count
+        new.bytes = self.bytes + other.bytes
+        new.duration = self.duration + other.duration
+        new.time = self.time + other.time
+        new.unimplemented = self.unimplemented + other.unimplemented
+        return new
+
+    def __iadd__(self, other) -> Self:
+        if not isinstance(other, RTPPacketsStats):
+            return NotImplemented
+
+        self.count += other.count
+        self.bytes += other.bytes
+        self.duration += other.duration
+        self.time += other.time
+        self.unimplemented += other.unimplemented
+        return self

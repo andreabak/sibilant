@@ -55,7 +55,11 @@ class RTPException(SibilantException):
     """Base class for all exceptions raised by the RTP module."""
 
 
-class RTPParseException(RTPException, ParseError):
+class RTPUnsupportedVersion(SIPUnsupportedError):
+    """The RTP version is not supported by this library."""
+
+
+class RTPParseError(RTPException, ParseError):
     """Exception related to RTP data parsing."""
 
 
