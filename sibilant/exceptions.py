@@ -69,3 +69,11 @@ class RTPMismatchedStreamError(RTPException):
 
 class RTPBrokenStreamError(RTPException):
     """Exception raised when a stream is broken (e.g. too many packets are missing)"""
+
+
+class RTPUnhandledPayload(RTPException, NotImplementedError):
+    """Exception raised when a payload type is not handled by the library."""
+
+
+class RTPUnsupportedCodec(RTPException, NotImplementedError):
+    """Exception raised when a codec is not supported by this library."""

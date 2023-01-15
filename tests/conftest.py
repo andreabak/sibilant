@@ -2,9 +2,11 @@ import enum
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Tuple
 
 import pytest
 import dpkt
+from dpkt.utils import inet_to_str
 
 
 _logger = logging.getLogger(__name__)
@@ -24,6 +26,8 @@ class PacketType(enum.Enum):
 class Packet:
     timestamp: float
     dest: Dest
+    src_addr: Tuple[str, int]
+    dst_addr: Tuple[str, int]
     type: PacketType
     data: bytes
 
@@ -54,7 +58,13 @@ def voip_calls():
                 ip = eth.data
                 if ip.p not in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
                     continue
-                data, src, sport, dst, dport = ip.data.data, ip.src, ip.data.sport, ip.dst, ip.data.dport
+                data, src, sport, dst, dport = (
+                    ip.data.data,
+                    ip.src,
+                    ip.data.sport,
+                    ip.dst,
+                    ip.data.dport,
+                )
 
                 is_sip = b"SIP/2.0" in data
                 # make sure it's not a RTCP packet, checking that packet type is not 200-204
@@ -79,7 +89,11 @@ def voip_calls():
                         )
                         break
 
-                if is_rtp and last_ports_pair and set(last_ports_pair) == {sport, dport}:
+                if (
+                    is_rtp
+                    and last_ports_pair
+                    and set(last_ports_pair) == {sport, dport}
+                ):
                     if (sport, dport) == last_ports_pair:  # same order
                         dest = last_dest
                     else:  # reverse
@@ -87,7 +101,16 @@ def voip_calls():
                 else:
                     dest = Dest.SERVER if dst == server_ip else Dest.CLIENT
 
-                call_packets.append(Packet(ts, dest, packet_type, data))
+                call_packets.append(
+                    Packet(
+                        timestamp=ts,
+                        dest=dest,
+                        type=packet_type,
+                        src_addr=(inet_to_str(src), sport),
+                        dst_addr=(inet_to_str(dst), dport),
+                        data=data,
+                    )
+                )
 
                 last_ports_pair = (sport, dport)
                 last_dest = dest

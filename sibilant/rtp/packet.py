@@ -4,16 +4,29 @@ import enum
 import time
 from contextlib import contextmanager
 from dataclasses import replace as dataclass_replace, field as dataclass_field
-from typing import Union, Optional, TYPE_CHECKING, Any, ClassVar, List, Iterator
+from typing import (
+    Union,
+    Optional,
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    List,
+    Iterator,
+    Type,
+    Callable,
+)
 
 try:
     from typing import Self
 except ImportError:
     from typing_extensions import Self
 
+import numpy as np
 from cbitstruct import CompiledFormat
 
+from ..codecs import Codec, PCMUCodec, PCMACodec
 from ..helpers import FieldsEnum, dataclass, FieldsEnumDatatype
+from ..exceptions import RTPUnsupportedCodec
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -34,13 +47,34 @@ class RTPMediaFormat(FieldsEnumDatatype):
     channels: Optional[int] = None
     format_specific_parameters: Optional[str] = None
 
-    @property
-    def mimetype(self) -> str:  # TODO: is this correct?
-        return f"{self.media_type.value}/{self.encoding_name}".lower()
+    codec_type: Optional[Type[Codec]] = None
+    codec: Optional[Codec] = None
+
+    def __post_init__(self):
+        if self.codec is None and self.codec_type is not None:
+            self.codec = self.codec_type()
+        elif self.codec_type is None:
+            self.codec_type = type(self.codec)
 
     @property
     def enum_value(self) -> Any:
         return self.payload_type
+
+    @property
+    def mimetype(self) -> str:  # TODO: is this correct?
+        return f"{self.media_type.value}/{self.encoding_name}".lower()
+
+    def encode(self, data: np.ndarray) -> bytes:
+        """Encode float32 audio in the [-1, 1] range to bytes."""
+        if self.codec is None:
+            raise RTPUnsupportedCodec(f"No codec set for this media format: {self!r}")
+        return self.codec.encode(data)
+
+    def decode(self, data: bytes) -> np.ndarray:
+        """Decode bytes to float32 audio in the [-1, 1] range."""
+        if self.codec is None:
+            raise RTPUnsupportedCodec(f"No codec set for this media format: {self!r}")
+        return self.codec.decode(data)
 
 
 UNKNOWN_FORMAT = RTPMediaFormat("unknown", RTPMediaType.AUDIO_VIDEO, "unknown", 0)
@@ -52,23 +86,73 @@ class RTPMediaProfiles(FieldsEnum):
     __wrapped_type__ = RTPMediaFormat
     __allow_unknown__ = True
 
-    payload_type: Union[int, str]
+    payload_type: Union[
+        int, str
+    ]  # FIXME: should this be int only? (same in RTPMediaFormat)
     media_type: RTPMediaType
     encoding_name: str
     clock_rate: int
     channels: Optional[int]
     format_specific_parameters: Optional[str]
+    codec_type: Optional[Type[Codec]]
+    codec: Optional[Codec]
+
+    mimetype: str
+    encode: Callable[[np.ndarray], bytes]
+    decode: Callable[[bytes], np.ndarray]
+
+    @classmethod
+    def match(
+        cls,
+        payload_type: Union[int, str, None] = None,
+        media_format: Optional[RTPMediaFormat] = None,
+    ) -> RTPMediaProfiles:
+        """
+        Tries to match a media format to a profile.
+        Will try to match the payload type first, then the media format,
+        then try to match the encoding name as payload type.
+        In case no match is found, the unknown profile is returned.
+
+        :param payload_type: The payload type to match.
+        :param media_format: The media format to match.
+        :return: The matched or unknown profile.
+        """
+        if payload_type is None and media_format is None:
+            raise ValueError("One of `payload_type` or `media_format` must be provided")
+
+        payload_type_raw = (
+            payload_type if payload_type is not None else media_format.payload_type
+        )
+
+        media_profile: Optional[RTPMediaProfiles] = None
+        try:
+            media_profile = RTPMediaProfiles(payload_type_raw)
+
+        except (TypeError, ValueError):
+            if isinstance(payload_type_raw, str):
+                for known_media_profile in RTPMediaProfiles:
+                    if known_media_profile.encoding_name == payload_type_raw:
+                        media_profile = known_media_profile
+                        break
+
+        if media_profile is None:
+            media_profile = RTPMediaProfiles(
+                media_format
+                or dataclass_replace(UNKNOWN_FORMAT, payload_type=payload_type_raw)
+            )
+        assert media_profile is not None
+        return media_profile
 
     # TODO: add custom _missing_ make it so we match profiles where some fields are None by default, but actual packet specifies something
 
     # audio
-    PCMU = RTPMediaFormat(0, RTPMediaType.AUDIO, "PCMU", 8000, 1)
+    PCMU = RTPMediaFormat(0, RTPMediaType.AUDIO, "PCMU", 8000, 1, codec_type=PCMUCodec)
     GSM = RTPMediaFormat(3, RTPMediaType.AUDIO, "GSM", 8000, 1)
     G723 = RTPMediaFormat(4, RTPMediaType.AUDIO, "G723", 8000, 1)
     DVI4_8000 = RTPMediaFormat(5, RTPMediaType.AUDIO, "DVI4", 8000, 1)
     DVI4_16000 = RTPMediaFormat(6, RTPMediaType.AUDIO, "DVI4", 16000, 1)
     LPC = RTPMediaFormat(7, RTPMediaType.AUDIO, "LPC", 8000, 1)
-    PCMA = RTPMediaFormat(8, RTPMediaType.AUDIO, "PCMA", 8000, 1)
+    PCMA = RTPMediaFormat(8, RTPMediaType.AUDIO, "PCMA", 8000, 1, codec_type=PCMACodec)
     G722 = RTPMediaFormat(9, RTPMediaType.AUDIO, "G722", 8000, 1)
     L16_2 = RTPMediaFormat(10, RTPMediaType.AUDIO, "L16", 44100, 2)
     L16 = RTPMediaFormat(11, RTPMediaType.AUDIO, "L16", 44100, 1)
@@ -142,13 +226,8 @@ class RTPPacket:
             timestamp,
             ssrc,
         ) = cls._format_u64.unpack(data)
-        # check if payload_type_raw is a known profile
-        try:
-            payload_type = RTPMediaProfiles(payload_type_raw)
-        except (TypeError, ValueError):
-            payload_type = RTPMediaProfiles(
-                dataclass_replace(UNKNOWN_FORMAT, payload_type=payload_type_raw)
-            )
+
+        payload_type: RTPMediaProfiles = RTPMediaProfiles.match(payload_type_raw)
 
         csrc = []
         csrc_offset = cls._format_u64.calcsize() // 8
@@ -283,3 +362,49 @@ class RTPPacketsStats:
         self.time += other.time
         self.unimplemented += other.unimplemented
         return self
+
+
+class DTMFEventCode(enum.IntEnum):
+    DIGIT_0 = 0
+    DIGIT_1 = 1
+    DIGIT_2 = 2
+    DIGIT_3 = 3
+    DIGIT_4 = 4
+    DIGIT_5 = 5
+    DIGIT_6 = 6
+    DIGIT_7 = 7
+    DIGIT_8 = 8
+    DIGIT_9 = 9
+    STAR = 10
+    ASTERISK = STAR
+    POUND = 11
+    HASH = POUND
+    A = 12
+    B = 13
+    C = 14
+    D = 15
+
+
+@dataclass(slots=True)
+class DTMFEvent:
+    """Represents a DTMF event as defined in RFC 4733."""
+
+    event_code: DTMFEventCode
+    end_of_event: bool
+    volume: int
+    duration: int
+
+    _format_u32: ClassVar[CompiledFormat] = CompiledFormat("u8b1b1u6u16")
+
+    @classmethod
+    def parse(cls, data: bytes) -> Self:
+        event_raw, end_of_event, r, volume_raw, duration = cls._format_u32.unpack(data)
+        event_code = DTMFEventCode(event_raw)
+        assert r == 0
+        volume = -volume_raw
+        return cls(event_code, end_of_event, volume, duration)
+
+    def serialize(self) -> bytes:
+        return self._format_u32.pack(
+            self.event_code.value, self.end_of_event, 0, -self.volume, self.duration
+        )

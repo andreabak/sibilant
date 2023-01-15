@@ -3,6 +3,7 @@ import random
 import socket
 import threading
 import time
+from collections import namedtuple, defaultdict
 
 import pytest
 
@@ -14,6 +15,7 @@ from sibilant.rtp import (
     RTPMediaProfiles,
     RTPPacketsStats,
 )
+from tests.conftest import Dest
 
 
 class TestRTPPackets:
@@ -21,6 +23,7 @@ class TestRTPPackets:
         """Test that all the sample RTP packets can be parsed."""
         for packet in rtp_packets:
             rtp_packet = RTPPacket.parse(packet.data)
+            pass  # TODO: asserts
 
 
 def _streams_iterator(packets):
@@ -47,6 +50,44 @@ def _streams_iterator(packets):
         yield _packets_iterator()
         if packets is None:
             break
+
+
+def _streams_pair_iterator(packets):
+    """Create pair-matched send and receive streams of packets to simulate server/client"""
+    StreamsPair = namedtuple("Streampair", "client_streams, server_streams")
+    streams_pairs = defaultdict(
+        lambda: StreamsPair(defaultdict(list), defaultdict(list))
+    )
+    for packet in packets:
+        rtp_packet = RTPPacket.parse(packet.data)
+        stream = streams_pairs[frozenset((packet.src_addr, packet.dst_addr))]
+        if packet.dest == Dest.CLIENT:
+            stream.server_streams[rtp_packet.ssrc].append(rtp_packet)
+        else:
+            stream.client_streams[rtp_packet.ssrc].append(rtp_packet)
+
+    def pair_iterator(server_streams, client_streams):
+        server_streams = iter(server_streams)
+        client_streams = iter(client_streams)
+        while True:
+            try:
+                server_stream = next(server_streams)
+            except StopIteration:
+                server_stream = []
+            try:
+                client_stream = next(client_streams)
+            except StopIteration:
+                client_stream = []
+
+            if not server_stream and not client_stream:
+                break
+
+            yield server_stream, client_stream
+
+    for streams in streams_pairs.values():
+        yield from pair_iterator(
+            streams.server_streams.values(), streams.client_streams.values()
+        )
 
 
 class TestRTPStreamBuffer:
@@ -212,7 +253,10 @@ class MockRTPServer:
             else:
                 with self.send_stats.track(packet):
                     self.send(packet)
-                time.sleep(1e-4)
+                # FIXME: if we don't wait, we lose packets. Can we fix?
+                time.sleep(
+                    1e-6
+                )
 
     def send(self, packet):
         assert self.socket is not None
@@ -223,14 +267,17 @@ class MockRTPServer:
             self.recv()
 
     def recv(self):
+        pre_time_ns = time.perf_counter_ns()
         try:
             data, addr = self.socket.recvfrom(8192)
         except (socket.timeout, BlockingIOError):
             pass
         else:
             packet: RTPPacket = RTPPacket.parse(data)
-            with self.recv_stats.track(packet):
-                return data
+            post_time_ns = time.perf_counter_ns()
+            self.recv_stats.add(packet, (post_time_ns - pre_time_ns) / 1e9)
+            return data
+
         time.sleep(1e-6)
 
     def stop(self):
@@ -269,44 +316,56 @@ class TestRTPClient:
         if bool(cls._tot_client_send_stats):
             print(f"{cls.__name__} client sent: " + cls._tot_client_send_stats.format())
 
-    def test_rtp_client(self, rtp_packets_from_server, rtp_packets_from_client):
-        client_address = "127.0.0.1", 14546
-        server_address = "127.0.0.1", 24546
+    @classmethod
+    def _test_server_client(
+        cls, server_packets, client_packets, server_address=None, client_address=None
+    ):
+        if server_address is None:
+            server_address = "127.0.0.1", 24546  # TODO: get temp free ports
+        if client_address is None:
+            client_address = "127.0.0.1", 14546  # TODO: get temp free ports
 
-        def test(server_packets, client_packets):
+        test_profiles = {
+            0: RTPMediaProfiles.PCMU,
+            8: RTPMediaProfiles.PCMA,
+            96: RTPMediaProfiles.TELEPHONE_EVENT,
+            101: RTPMediaProfiles.TELEPHONE_EVENT,
+            # TODO: test telephone-event, but we need to know the payload type from rtpmap
+        }
+
+        try:
             first_packet = next(client_packets)
-            if first_packet.payload_type not in (
-                RTPMediaProfiles.PCMU,
-                RTPMediaProfiles.PCMA,
-            ):
+        except StopIteration:
+            client_packets = []
+        else:
+            if first_packet.payload_type.payload_type not in test_profiles:
                 return
             client_packets = itertools.chain([first_packet], client_packets)
-            server = MockRTPServer(server_packets, server_address, client_address)
-            client = RTPClient(
-                client_address,
-                server_address,
-                profile=first_packet.payload_type,
-                send_delay_factor=1e-4,
-            )
-            with client, server:
-                for packet in client_packets:
-                    client.write(packet.serialize())
-                    time.sleep(1e-4)
-                time.sleep(1e-1)  # wait for the last packets to be recv'd
-                server.send_thread.join()
-
-            assert server.send_stats.count == client.recv_stats.count
-            assert server.recv_stats.count == client.send_stats.count
-
-            self.__class__._tot_server_recv_stats += server.recv_stats
-            self.__class__._tot_server_send_stats += server.send_stats
-            self.__class__._tot_client_recv_stats += client.recv_stats
-            self.__class__._tot_client_send_stats += client.send_stats
-
-        streams = zip(
-            _streams_iterator(rtp_packets_from_server),
-            _streams_iterator(rtp_packets_from_client),
+        server = MockRTPServer(server_packets, server_address, client_address)
+        client = RTPClient(
+            client_address,
+            server_address,
+            media_formats=test_profiles,
+            send_delay_factor=1e-6,
         )
+        with client, server:
+            for packet in client_packets:
+                client.write(packet.serialize())
+                time.sleep(1e-4)
+            time.sleep(1e-1)  # wait for the last packets to be sent
+            server.send_thread.join()
+            time.sleep(1e-1)  # wait for the last packets to be recv'd
 
-        for server_packets, client_packets in streams:
-            test(server_packets, client_packets)
+        assert server.send_stats.count == client.recv_stats.count
+        assert server.recv_stats.count == client.send_stats.count
+
+        cls._tot_server_recv_stats += server.recv_stats
+        cls._tot_server_send_stats += server.send_stats
+        cls._tot_client_recv_stats += client.recv_stats
+        cls._tot_client_send_stats += client.send_stats
+
+    def test_rtp_client(self, rtp_packets):
+        for server_packets, client_packets in _streams_pair_iterator(rtp_packets):
+            self._test_server_client(iter(server_packets), iter(client_packets))
+
+    # TODO: test codec + speed, include enc/dec stats in the classes

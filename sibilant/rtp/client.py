@@ -5,15 +5,19 @@ import threading
 import time
 from io import RawIOBase
 from collections import deque
-from typing import IO, Deque, Optional, Mapping, Any, Union, Tuple
+from typing import IO, Deque, Optional, Mapping, Any, Union, Tuple, Collection
 
-from . import RTPMediaProfiles, RTPPacketsStats
+import numpy as np
+
+from . import RTPMediaProfiles, RTPPacketsStats, RTPMediaFormat, RTPMediaType, DTMFEvent
 from .packet import RTPPacket
 from ..constants import SUPPORTED_RTP_PROFILES
 from ..exceptions import (
     RTPBrokenStreamError,
     RTPMismatchedStreamError,
-    RTPUnsupportedVersion, RTPParseError,
+    RTPUnsupportedVersion,
+    RTPParseError,
+    RTPUnhandledPayload,
 )
 
 
@@ -36,17 +40,21 @@ class RTPStreamBuffer(RawIOBase, IO):
     TIMESTAMP_MAX: int = 2**32
     TIMESTAMP_WRAP_DELTA: int = DEFAULT_SIZE * 2**10
 
+    # TODO: maybe rename modes to send/recv instead of r/w?
+    #       otherwise, since they're doing completely different things,
+    #       maybe we should split this class into two (+ a base class)?
     def __init__(
         self,
         mode: str,
         ssrc: Optional[int] = None,
+        profile: Optional[RTPMediaProfiles] = None,
         initial_sequence: Optional[int] = None,
         initial_timestamp: Optional[int] = None,
         max_pending: int = 10,
         lost_filler: bytes = b"\x00",
     ):
         if mode not in ("r", "w"):
-            raise ValueError("mode must be either 'r' or 'w'")
+            raise ValueError("`mode` must be either 'r' or 'w'")
 
         if initial_sequence is None:
             initial_sequence = (
@@ -62,6 +70,8 @@ class RTPStreamBuffer(RawIOBase, IO):
             )
         if ssrc is None and mode == "r":
             ssrc = random.randrange(0, self.SSRC_MAX)
+        if profile is None and mode == "r":
+            raise ValueError("`profile` must be specified in mode='r'")
 
         self._mode: str = mode
         self._max_pending: int = max_pending
@@ -69,12 +79,14 @@ class RTPStreamBuffer(RawIOBase, IO):
         self._fill_size: int = self.DEFAULT_SIZE
 
         self.ssrc: Optional[int] = ssrc
+        self._profile: Optional[RTPMediaProfiles] = profile
         self.sequence: int = initial_sequence
         self.timestamp: int = initial_timestamp
         self._buffer: Deque[bytes] = deque()
         self._pending: Deque[RTPPacket] = deque()
         self._buf_lock: threading.RLock = threading.RLock()
 
+        # TODO: Move or merge these into RTPPacketsStats?
         self._seen_count: int = 0
         """Seen packets count: any packet received by the buffer."""
         self._out_of_order_count: int = 0
@@ -89,6 +101,10 @@ class RTPStreamBuffer(RawIOBase, IO):
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def profile(self) -> Optional[RTPMediaProfiles]:
+        return self._profile
 
     @property
     def seen_count(self) -> int:
@@ -137,12 +153,28 @@ class RTPStreamBuffer(RawIOBase, IO):
 
         return data
 
+    def read_audio(self, size: int = DEFAULT_SIZE) -> np.ndarray:
+        """
+        Read audio data from the buffer, decoded with the appropriate codec,
+        into a float32 numpy array in the range [-1, 1].
+        The rate is unchanged, so the same as the stream's profile.
+        If no data is available, will return an empty numpy array.
+
+        :param size: The maximum number of bytes to read.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        if self._profile is None:
+            raise ValueError("Stream has no profile set, cannot decode audio")
+        if self._profile.media_type != RTPMediaType.AUDIO:
+            raise ValueError("Can only read audio from a stream with audio profile")
+        return self._profile.decode(self.read(size))
+
     def read_packet(
         self, packet: Union[RTPPacket, Mapping[str, Any]], size: int = DEFAULT_SIZE
     ) -> Optional[RTPPacket]:
         """
         Read up to size bytes from the buffer, and return a packet with the given values.
-        N.B. payload, ssrc, sequence, and timestamp will be overwritten.
+        N.B. payload, payload_type, ssrc, sequence, and timestamp will be overwritten.
         """
         if self._mode != "r":
             raise ValueError("Can only read packets in mode='r'")
@@ -162,17 +194,19 @@ class RTPStreamBuffer(RawIOBase, IO):
         if isinstance(packet, Mapping):
             packet = RTPPacket(
                 **packet,
-                payload=data,
+                payload_type=self._profile,
                 ssrc=self.ssrc,
                 sequence=self.sequence,
                 timestamp=self.timestamp,
+                payload=data,
             )
         else:
             assert isinstance(packet, RTPPacket)
-            packet.payload = data
+            packet.payload_type = self._profile
             packet.ssrc = self.ssrc
             packet.sequence = self.sequence
             packet.timestamp = self.timestamp
+            packet.payload = data
         return packet
 
     def write(self, data: bytes) -> int:
@@ -182,6 +216,22 @@ class RTPStreamBuffer(RawIOBase, IO):
         with self._buf_lock:
             self._buffer.append(data)
         return len(data)
+
+    def write_audio(self, data: np.ndarray) -> int:
+        """
+        Write audio data to the buffer, encoded with the appropriate codec,
+        given a float32 numpy array in the range [-1, 1].
+        The rate is fed unchanged, so it must match the stream's profile.
+        Returns the number of bytes written.
+
+        :param data: The data to write.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        if self._profile is None:
+            raise ValueError("Stream has no profile set, cannot encode audio")
+        if self._profile.media_type != RTPMediaType.AUDIO:
+            raise ValueError("Can only write audio to a stream with audio profile")
+        return self.write(self._profile.encode(data))
 
     def write_packet(self, packet: RTPPacket) -> int:
         """
@@ -193,11 +243,17 @@ class RTPStreamBuffer(RawIOBase, IO):
         with self._buf_lock:
             if self.ssrc is None:
                 self.ssrc = packet.ssrc
+                self._profile = packet.payload_type
                 self.sequence = packet.sequence - 1
 
             if self.ssrc != packet.ssrc:
                 raise RTPMismatchedStreamError(
                     f"Packet does not match stream SSRC {self.ssrc} != {packet.ssrc}"
+                )
+
+            if self._profile != packet.payload_type:
+                raise RTPMismatchedStreamError(
+                    f"Packet does not match stream profile {self._profile} != {packet.payload_type}"
                 )
 
             self._pending.append(packet)
@@ -259,24 +315,44 @@ class RTPClient:
         self,
         local_addr: Tuple[str, int],
         remote_addr: Tuple[str, int],
-        profile: RTPMediaProfiles,
+        media_formats: Union[
+            Collection[Union[RTPMediaFormat, RTPMediaProfiles]],
+            Mapping[int, Union[RTPMediaFormat, RTPMediaProfiles]],
+        ],
         send_delay_factor: float = 1.0,
     ):
         self._local_addr: Tuple[str, int] = local_addr
         self._remote_addr: Tuple[str, int] = remote_addr
 
-        if profile.name not in SUPPORTED_RTP_PROFILES:
-            raise RTPUnsupportedVersion(f"Unsupported RTP profile {profile.name}")
-        self._profile: RTPMediaProfiles = profile
+        if not isinstance(media_formats, Mapping):
+            media_formats = {f.payload_type: f for f in media_formats}
+        self._media_profiles: Mapping[int, RTPMediaProfiles] = {
+            payload_type: (
+                media_format
+                if isinstance(media_format, RTPMediaProfiles)
+                else RTPMediaProfiles.match(payload_type, media_format)
+            )
+            for payload_type, media_format in media_formats.items()
+        }
+
+        # FIXME: should we have separate profiles for sending and receiving?
+        # try to find a supported format and use that as RTPMediaProfile for the streams
+        self._profile: RTPMediaProfiles
+        for profile in self._media_profiles.values():
+            if profile.name in SUPPORTED_RTP_PROFILES:
+                self._profile = profile
+                break
+        else:
+            raise RTPUnsupportedVersion(f"No supported RTP profiles in {media_formats}")
 
         self._send_delay_factor: float = send_delay_factor
 
-        # we write packets to
-        self._recv_stream: RTPStreamBuffer = RTPStreamBuffer(mode="w")
-        # we read packets from
-        self._send_stream: RTPStreamBuffer = RTPStreamBuffer(mode="r")
+        self._recv_stream: RTPStreamBuffer = self._create_recv_stream()
+        self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
-        self._socket: Optional[socket.socket] = None
+        # use two sockets for sending and receiving, should be more robust for recv
+        self._recv_socket: Optional[socket.socket] = None
+        self._send_socket: Optional[socket.socket] = None
 
         self._recv_thread: Optional[threading.Thread] = None
         self._send_thread: Optional[threading.Thread] = None
@@ -287,6 +363,12 @@ class RTPClient:
 
         self._closed: bool = False
         self._closing: bool = False
+
+    def _create_recv_stream(self) -> RTPStreamBuffer:
+        return RTPStreamBuffer(mode="w")
+
+    def _create_send_stream(self) -> RTPStreamBuffer:
+        return RTPStreamBuffer(mode="r", profile=self._profile)
 
     @property
     def recv_stats(self) -> RTPPacketsStats:
@@ -301,9 +383,14 @@ class RTPClient:
         return self._closed
 
     def start(self):
-        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._socket.setblocking(False)
-        self._socket.bind(self._local_addr)
+        self._recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._recv_socket.setsockopt(
+            socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024
+        )
+        self._recv_socket.setblocking(False)
+        self._recv_socket.bind(self._local_addr)
+
+        self._send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         self._recv_thread = threading.Thread(target=self._recv_loop)
         self._send_thread = threading.Thread(target=self._send_loop)
@@ -315,7 +402,8 @@ class RTPClient:
         self._closing = True
         self._recv_thread.join()
         self._send_thread.join()
-        self._socket.close()
+        self._recv_socket.close()
+        self._send_socket.close()
         self._closed = True
 
     def __enter__(self):
@@ -330,24 +418,61 @@ class RTPClient:
         Receives data packets into the input stream buffer, until the client is closed.
         """
         while not self._closing:
+            start_time_ns: int = time.perf_counter_ns()
+
+            packet: Optional[RTPPacket] = None
             try:
-                start_time_ns: int = time.perf_counter_ns()
-
-                data, addr = self._socket.recvfrom(8192)
-
-                packet: RTPPacket = RTPPacket.parse(data)
-                self._recv_stream.write_packet(packet)
-
-                end_time_ns: int = time.perf_counter_ns()
-                self._recv_stats.add(packet, (end_time_ns - start_time_ns) / 1e9)
-
+                data, addr = self._recv_socket.recvfrom(8192)
             except (socket.timeout, BlockingIOError):
                 pass
+            else:
+                try:
+                    packet = self._recv_packet(data)
 
-            except RTPParseError as e:
-                _logger.debug(f"Error parsing packet: {e}")
+                except RTPParseError as e:
+                    _logger.debug(f"Error parsing packet: {e}")
+
+                except RTPBrokenStreamError as e:
+                    _logger.debug(str(e))
+                    # FIXME: decide whether we should do something else here?
+                    #        somehow raise outside the thread? set some err flag?
+                    self._recv_stream = self._create_recv_stream()
+                    packet = self._recv_packet(data)
+
+            end_time_ns: int = time.perf_counter_ns()
+            if packet is not None:
+                self._recv_stats.add(packet, (end_time_ns - start_time_ns) / 1e9)
 
             time.sleep(1e-6)
+
+    def _recv_packet(self, data: bytes) -> Optional[RTPPacket]:
+        """
+        Parses a received packet and writes it to the input stream buffer.
+        """
+        packet: RTPPacket = RTPPacket.parse(data)
+
+        # sanity check and packet pre-parsing
+        if packet.payload_type.payload_type not in self._media_profiles:
+            raise RTPParseError(f"Unexpected payload type {packet.payload_type}")
+
+        if (
+            self._recv_stream.profile is None
+            or packet.payload_type == self._recv_stream.profile
+        ):
+            self._recv_stream.write_packet(packet)
+        else:
+            profile = self._media_profiles[packet.payload_type.payload_type]
+            if profile == RTPMediaProfiles.TELEPHONE_EVENT:
+                self._handle_telephone_event(packet)
+                if packet.ssrc == self._recv_stream.ssrc:
+                    self._recv_stream.sequence = packet.sequence
+                    self._recv_stream.timestamp = packet.timestamp
+            else:
+                raise RTPUnhandledPayload(
+                    f"Unhandled or unexpected payload type {packet.payload_type}"
+                )
+
+        return packet
 
     def _send_loop(self) -> None:
         """
@@ -359,7 +484,6 @@ class RTPClient:
             extension=False,
             csrc_count=0,
             marker=False,  # FIXME: should this be set? if so when? how?
-            payload_type=self._profile,
         )
 
         while not self._closing:
@@ -367,10 +491,12 @@ class RTPClient:
 
             packet: Optional[RTPPacket] = self._send_stream.read_packet(packet_data)
             if packet is not None:
-                with self._send_stats.track(packet):
-                    self._socket.sendto(packet.serialize(), self._remote_addr)
+                self._send_socket.sendto(packet.serialize(), self._remote_addr)
 
-            send_time: float = (time.perf_counter_ns() - pre_send_time_ns) / 1e9
+            post_send_time_ns: int = time.perf_counter_ns()
+            send_time: float = (post_send_time_ns - pre_send_time_ns) / 1e9
+            if packet is not None:
+                self._send_stats.add(packet, send_time)
             packet_duration: float = packet and packet.duration or 0.0
             sleep_time: float = max(0.0, max(1 / 96_000, packet_duration) - send_time)
             time.sleep(sleep_time * self._send_delay_factor)
@@ -384,6 +510,25 @@ class RTPClient:
         """
         return self._recv_stream.read(size)
 
+    def read_audio(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
+        """
+        Read audio data from the incoming RTP stream, decoded with the appropriate codec,
+        into a float32 numpy array in the range [-1, 1].
+        The rate is unchanged, so the same as the stream profile.
+        If no data is available, will return an empty numpy array.
+
+        :param size: The maximum number of bytes to read.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        return self._recv_stream.read_audio(size)
+
+    def _handle_telephone_event(self, packet: RTPPacket):
+        """
+        Handles telephone event packets.
+        """
+        dtmf = DTMFEvent.parse(packet.payload)
+        pass  # TODO: implement
+
     def write(self, data: bytes) -> int:
         """
         Write raw (encoded) data to the outgoing RTP stream.
@@ -392,3 +537,15 @@ class RTPClient:
         :param data: The encoded data to write.
         """
         return self._send_stream.write(data)
+
+    def write_audio(self, data: np.ndarray) -> int:
+        """
+        Write audio data to the outgoing RTP stream, encoded with the appropriate codec,
+        given a float32 numpy array in the range [-1, 1].
+        The rate is fed unchanged, so it must match the stream's profile.
+        Returns the number of bytes written.
+
+        :param data: The data to write.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        return self._send_stream.write_audio(data)
