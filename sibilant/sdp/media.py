@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import enum
 from abc import ABC
 from dataclasses import field as dataclass_field
 from typing import Dict, Optional, List, TYPE_CHECKING
@@ -12,8 +11,8 @@ except ImportError:
     from typing_extensions import Self
 
 from ..exceptions import SDPParseError
-from ..helpers import dataclass
-from ..rtp import RTPMediaType, RTPMediaFormat
+from ..helpers import dataclass, IntValueMixin
+from ..rtp import RTPMediaType, RTPMediaFormat, MediaFlowType
 from .common import (
     SDPField,
     SDPInformationField,
@@ -29,6 +28,7 @@ from .common import (
     SDPAttributeField,
     MediaFlowAttribute,
     SDPSection,
+    ValueAttribute,
 )
 
 if TYPE_CHECKING:
@@ -48,10 +48,12 @@ __all__ = [
     "SendRecvMediaFlag",
     "SendOnlyMediaFlag",
     "InactiveMediaFlag",
+    "PTimeAttribute",
+    "MaxPTimeAttribute",
     "RTPMapAttribute",
     "FMTPAttribute",
     "SDPMediaAttributeField",
-    "SDPMediaFlowType",
+    "get_media_flow_attribute",
     "get_media_flow_type",
     "SDPMedia",
 ]
@@ -104,7 +106,6 @@ class SDPMediaMedia(SDPMediaFields):
             number_of_ports=number_of_ports,
             protocol=protocol,
             formats=formats,
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
@@ -191,6 +192,16 @@ class InactiveMediaFlag(InactiveFlag, SDPMediaAttribute):
 
 
 @dataclass(slots=True)
+class PTimeAttribute(IntValueMixin, ValueAttribute, SDPMediaAttribute):
+    _name = "ptime"
+
+
+@dataclass(slots=True)
+class MaxPTimeAttribute(IntValueMixin, ValueAttribute, SDPMediaAttribute):
+    _name = "maxptime"
+
+
+@dataclass(slots=True)
 class RTPMapAttribute(SDPMediaAttribute):
     """
     SDP media attribute for RTP map, defined in :rfc:`4566#section-6`.
@@ -218,7 +229,6 @@ class RTPMapAttribute(SDPMediaAttribute):
             encoding_name=encoding_name,
             clock_rate=int(clock_rate),
             encoding_parameters=encoding_parameters,
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
@@ -249,7 +259,6 @@ class FMTPAttribute(SDPMediaAttribute):
         return cls(
             format=int(format_),
             format_specific_parameters=format_specific_parameters,
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
@@ -271,22 +280,24 @@ class SDPMediaAttributeField(SDPAttributeField, SDPMediaFields):
     _description = "zero or more media attribute lines"
 
 
-class SDPMediaFlowType(enum.Enum):
-    SENDRECV = "sendrecv"
-    SENDONLY = "sendonly"
-    RECVONLY = "recvonly"
-    INACTIVE = "inactive"
+def get_media_flow_attribute(flow_type: MediaFlowType) -> SDPMediaAttribute:
+    return {
+        flow_type.SENDRECV: SendRecvMediaFlag,
+        flow_type.SENDONLY: SendOnlyMediaFlag,
+        flow_type.RECVONLY: RecvOnlyMediaFlag,
+        flow_type.INACTIVE: InactiveMediaFlag,
+    }[flow_type]()
 
 
 def get_media_flow_type(
     attributes: List[SDPAttributeField],
-) -> Optional[SDPMediaFlowType]:
-    media_flow_type: Optional[SDPMediaFlowType] = None
+) -> Optional[MediaFlowType]:
+    media_flow_type: Optional[MediaFlowType] = None
     for attribute_field in attributes:
         if isinstance(attribute_field.attribute, MediaFlowAttribute):
             if media_flow_type is not None:
                 raise SDPParseError("Multiple media flow attributes in session")
-            media_flow_type = SDPMediaFlowType(attribute_field.attribute.name)
+            media_flow_type = MediaFlowType(attribute_field.attribute.name)
     return media_flow_type
 
 
@@ -317,7 +328,7 @@ class SDPMedia(SDPSection):
         self._media_formats = self._build_media_formats()
 
     @property
-    def media_flow_type(self) -> Optional[SDPMediaFlowType]:
+    def media_flow_type(self) -> Optional[MediaFlowType]:
         return get_media_flow_type(self.attributes)
 
     # FIXME: media formats can be out-of date if something in the class changes. generate on the fly?

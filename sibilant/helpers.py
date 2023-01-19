@@ -4,7 +4,8 @@ import enum
 import re
 import sys
 import types
-from abc import ABC
+import typing
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass as _dtcls, is_dataclass
 from functools import wraps
@@ -24,7 +25,7 @@ from typing import (
     Callable,
     get_args,
     get_origin,
-    TYPE_CHECKING, )
+    TYPE_CHECKING, Protocol, AnyStr, )
 from typing import Mapping
 
 try:
@@ -48,6 +49,13 @@ def dataclass(*args, **kwargs) -> Callable[[_dT], _dT]:
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
+
+
+@typing.runtime_checkable
+class SupportsStr(Protocol):
+    @abstractmethod
+    def __str__(self) -> str:
+        ...
 
 
 class FieldsEnumDatatype:

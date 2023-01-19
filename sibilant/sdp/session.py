@@ -9,6 +9,7 @@ try:
 except ImportError:
     from typing_extensions import Self
 
+from ..rtp import MediaFlowType
 from ..constants import SUPPORTED_SDP_VERSIONS
 from ..exceptions import SDPParseError
 from ..helpers import StrValueMixin, dataclass
@@ -27,7 +28,7 @@ from .common import (
     SDPAttributeField,
     SDPSection,
 )
-from .media import SDPMedia, SDPMediaFlowType, get_media_flow_type
+from .media import SDPMedia, get_media_flow_type
 from .time import SDPTime
 
 if TYPE_CHECKING:
@@ -117,7 +118,6 @@ class SDPSessionOrigin(SDPSessionFields):
             nettype=nettype,
             addrtype=addrtype,
             unicast_address=unicast_address,
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
@@ -381,7 +381,7 @@ class SDPSession(SDPSection):
             raise ValueError("SDP session must have at least one time field")
 
     @property
-    def media_flow_type(self) -> Optional[SDPMediaFlowType]:
+    def media_flow_type(self) -> Optional[MediaFlowType]:
         return get_media_flow_type(self.attributes)
 
     @classmethod

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import field as dataclass_field
-from typing import Optional, Pattern, ClassVar, Match, Collection, Dict, Mapping
+from typing import Optional, Pattern, ClassVar, Match, Collection, Dict, Mapping, TYPE_CHECKING
 
 try:
     from typing import Self
@@ -13,6 +13,9 @@ from frozendict import frozendict
 
 from .exceptions import SIPParseError
 from .helpers import dataclass
+
+if TYPE_CHECKING:
+    from dataclasses import dataclass
 
 
 ALLOWED_SYMBOLS: str = r"_.!~*'()%\-"

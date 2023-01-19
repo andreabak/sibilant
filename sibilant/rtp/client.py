@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import enum
 import logging
 import random
 import socket
@@ -308,6 +311,13 @@ class RTPStreamBuffer(RawIOBase, IO):
     # TODO: implement a way to "reset" the stream? Otherwise we could just create a new one
 
 
+class MediaFlowType(enum.Enum):
+    SENDRECV = "sendrecv"
+    SENDONLY = "sendonly"
+    RECVONLY = "recvonly"
+    INACTIVE = "inactive"
+
+
 class RTPClient:
     """Implements an RTP client using UDP sockets."""
 
@@ -350,7 +360,7 @@ class RTPClient:
         self._recv_stream: RTPStreamBuffer = self._create_recv_stream()
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
-        # use two sockets for sending and receiving, should be more robust for recv
+        # FIXME: using two sockets doesn't make a difference, refactor into one
         self._recv_socket: Optional[socket.socket] = None
         self._send_socket: Optional[socket.socket] = None
 
@@ -362,7 +372,8 @@ class RTPClient:
         self._send_stats: RTPPacketsStats = RTPPacketsStats()
 
         self._closed: bool = False
-        self._closing: bool = False
+        self._closing_event: threading.Event = threading.Event()
+        self._closing_event.clear()
 
     def _create_recv_stream(self) -> RTPStreamBuffer:
         return RTPStreamBuffer(mode="w")
@@ -383,6 +394,9 @@ class RTPClient:
         return self._closed
 
     def start(self):
+        if self._recv_socket is not None:
+            raise RuntimeError("RTP client already started")
+
         self._recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._recv_socket.setsockopt(
             socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024
@@ -392,6 +406,7 @@ class RTPClient:
 
         self._send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+        # TODO: name threads
         self._recv_thread = threading.Thread(target=self._recv_loop)
         self._send_thread = threading.Thread(target=self._send_loop)
 
@@ -399,12 +414,18 @@ class RTPClient:
         self._send_thread.start()
 
     def stop(self):
-        self._closing = True
+        self._closing_event.set()
         self._recv_thread.join()
         self._send_thread.join()
         self._recv_socket.close()
         self._send_socket.close()
+
+        self._recv_socket = None
+        self._send_socket = None
+        self._recv_thread = None
+        self._send_thread = None
         self._closed = True
+        self._closing_event.clear()
 
     def __enter__(self):
         self.start()
@@ -417,7 +438,7 @@ class RTPClient:
         """
         Receives data packets into the input stream buffer, until the client is closed.
         """
-        while not self._closing:
+        while not self._closing_event.is_set():
             start_time_ns: int = time.perf_counter_ns()
 
             packet: Optional[RTPPacket] = None
@@ -430,7 +451,7 @@ class RTPClient:
                     packet = self._recv_packet(data)
 
                 except RTPParseError as e:
-                    _logger.debug(f"Error parsing packet: {e}")
+                    _logger.debug(f"Error parsing RTP packet: {e}")
 
                 except RTPBrokenStreamError as e:
                     _logger.debug(str(e))
@@ -486,7 +507,7 @@ class RTPClient:
             marker=False,  # FIXME: should this be set? if so when? how?
         )
 
-        while not self._closing:
+        while not self._closing_event.is_set():
             pre_send_time_ns: int = time.perf_counter_ns()
 
             packet: Optional[RTPPacket] = self._send_stream.read_packet(packet_data)

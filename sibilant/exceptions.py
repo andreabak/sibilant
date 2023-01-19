@@ -35,6 +35,22 @@ class SIPParseError(SIPException, ParseError):
     """Exceptions related to SIP messages / data parsing."""
 
 
+class SIPTimeout(SIPException, TimeoutError):
+    """Raised when a SIP transaction times out."""
+
+
+class SIPBadRequest(SIPException):
+    """Raised when a we get a 400 Bad Request response from the server."""
+
+
+class SIPBadResponse(SIPException):
+    """Raised when a SIP response is not valid."""
+
+
+class SIPAuthenticationError(SIPException):
+    """Raised when a SIP authentication fails."""
+
+
 class SDPException(SibilantException):
     """Base class for all exceptions raised by the SDP module."""
 

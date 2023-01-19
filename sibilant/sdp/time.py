@@ -48,9 +48,7 @@ class SDPTimeTime(SDPTimeFields):
     @classmethod
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         start_time, stop_time = raw_value.split(" ")
-        return cls(
-            start_time=int(start_time), stop_time=int(stop_time), raw_value=raw_value
-        )
+        return cls(start_time=int(start_time), stop_time=int(stop_time))
 
     def serialize(self) -> str:
         return f"{self.start_time} {self.stop_time}"
@@ -92,12 +90,9 @@ class SDPTimeRepeat(SDPTimeFields):
             interval=parse_time(interval),
             duration=parse_time(duration),
             offsets=[parse_time(offset) for offset in offsets],
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
-        if self.raw_value:
-            return self.raw_value  # FIXME would this require freezing?
         return f"{self.interval} {self.duration} {' '.join(str(offset) for offset in self.offsets)}"
 
 

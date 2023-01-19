@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any, TYPE_CHECKING, TypeVar
 
 try:
     from typing import Self
 except ImportError:
     from typing_extensions import Self
 
-from ..helpers import FieldsEnum, AutoFieldsEnum
+from ..helpers import AutoFieldsEnum, SupportsStr
 from ..constants import SUPPORTED_SIP_VERSIONS
 from ..exceptions import SIPUnsupportedVersion, SIPParseError, SIPUnsupportedError
 from ..structures import SIPURI
@@ -566,14 +567,17 @@ class SIPStatus(AutoFieldsEnum):
     )
 
 
+_M = TypeVar("_M", bound="SIPMessage")
+
+
 class SIPMessage(ABC):
-    def __init__(self, version: str, headers: Headers, body: Optional[SDPSession]):
+    def __init__(self, version: str, headers: Headers, body: Optional[SupportsStr]):
         if version not in SUPPORTED_SIP_VERSIONS:
             raise SIPUnsupportedVersion(f"Unsupported SIP version: {version}")
 
         self.version: str = version
         self.headers: Headers = headers
-        self.body: Any = body
+        self.body: Optional[SupportsStr] = body
 
         self.sdp: Optional[SDPSession] = (
             self.body if isinstance(self.body, SDPSession) else None
@@ -585,7 +589,15 @@ class SIPMessage(ABC):
         """Start line of the SIP message."""
 
     @classmethod
-    def parse(cls, data: bytes) -> Self:
+    def parse(cls, data: bytes) -> _M:
+        if cls is SIPMessage:
+            if re.search(rb"^SIP/[\d.]+", data):
+                return SIPResponse.parse(data)
+            elif re.search(rb"^[^\r\n]+SIP/[\d.]+\r\n", data):
+                return SIPRequest.parse(data)
+            else:
+                raise SIPParseError("Invalid SIP message")
+
         try:
             headers_raw, *rest = data.split(b"\r\n\r\n", 1)
             body_raw = rest[0] if rest else b""
@@ -622,6 +634,15 @@ class SIPMessage(ABC):
     def __str__(self) -> str:
         return f"{self.start_line}\r\n{self.headers}\r\n\r\n{self.body or ''}"
 
+    def serialize(self) -> bytes:
+        return str(self).encode("utf-8")
+
+    def __bytes__(self) -> bytes:
+        return self.serialize()
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__}> {self.start_line}"
+
 
 class SIPRequest(SIPMessage):
     def __init__(
@@ -629,8 +650,8 @@ class SIPRequest(SIPMessage):
         method: SIPMethod,
         uri: SIPURI,
         version: str,
-        headers: Headers = None,
-        body: str = None,
+        headers: Optional[Headers] = None,
+        body: Optional[SupportsStr] = None,
     ):
         super().__init__(version, headers, body)
         self.method: SIPMethod = method
@@ -651,19 +672,19 @@ class SIPRequest(SIPMessage):
 class SIPResponse(SIPMessage):
     def __init__(
         self,
-        status_code: SIPStatus,
+        status: SIPStatus,
         version: str,
-        headers: Headers = None,
-        body: str = None,
+        headers: Optional[Headers] = None,
+        body: Optional[SupportsStr] = None,
     ):
         super().__init__(version, headers, body)
-        self.status_code: SIPStatus = status_code
+        self.status: SIPStatus = status
 
     @property
     def start_line(self) -> str:
-        return f"{self.version} {self.status_code.code} {self.status_code.reason}"
+        return f"{self.version} {self.status.code} {self.status.reason}"
 
     @classmethod
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
         version, code, reason = start_line.decode("utf-8").split(" ", 2)
-        return dict(status_code=SIPStatus(int(code)), version=version)
+        return dict(status=SIPStatus(int(code)), version=version)

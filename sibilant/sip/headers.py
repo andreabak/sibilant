@@ -3,7 +3,19 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from dataclasses import fields as dataclass_fields
-from typing import ClassVar, Union, Dict, Type, Optional, TYPE_CHECKING, TypeVar
+from typing import (
+    ClassVar,
+    Union,
+    Dict,
+    Type,
+    Optional,
+    TYPE_CHECKING,
+    TypeVar,
+    Mapping,
+    List,
+    Set,
+    Tuple,
+)
 
 try:
     from typing import Self
@@ -24,6 +36,7 @@ from ..structures import SIPAddress
 from ..exceptions import SIPParseError
 
 if TYPE_CHECKING:
+    from .messages import SIPMethod
     from dataclasses import dataclass
 
 
@@ -37,10 +50,17 @@ __all__ = [
     "FromToHeader",
     "FromHeader",
     "ToHeader",
+    "Contact",
+    "ContactHeader",
+    "CallIDHeader",
     "CSeqHeader",
     "AllowHeader",
     "SupportedHeader",
+    "ExpiresHeader",
+    "ContentTypeHeader",
     "ContentLengthHeader",
+    "MaxForwardsHeader",
+    "UserAgentHeader",
     "AuthorizationHeader",
     "WWWAuthenticateHeader",
     "Headers",
@@ -239,19 +259,95 @@ class ToHeader(FromToHeader):
 
 
 @dataclass(slots=True)
+class Contact:
+    """
+    A single contact as part of a contact header, as described in :rfc:`3261#section-20.10`.
+    """
+
+    address: SIPAddress
+    q: Optional[float] = None
+    expires: Optional[int] = None
+    params: Optional[Dict[str, Optional[str]]] = None
+
+    @classmethod
+    def parse(cls, value: str) -> Self:
+        q: Optional[float] = None
+        expires: Optional[int] = None
+        params: Optional[Dict[str, Optional[str]]] = None
+
+        if ";" in value:  # there are parameters, address will be in <...> form.
+            address_raw, *params_raw = re.split(r"(?<=>)\s*;\s*", value, maxsplit=1)
+            if params_raw:
+                for param in re.split(r"\s*;\s*", params_raw[0]):
+                    param_name, param_value = param.split("=", maxsplit=1)
+                    param_name = param_name.strip()
+                    param_value = param_value.strip()
+                    if param_name == "q":
+                        q = float(param_value)
+                    elif param_name == "expires":
+                        expires = int(param_value)
+                    else:
+                        params[param_name] = param_value
+        else:
+            address_raw = value
+
+        address = SIPAddress.parse(address_raw.strip())
+        return cls(address=address, q=q, expires=expires, params=params)
+
+    def serialize(self) -> str:
+        params = []
+        if self.q:
+            params.append(f"q={self.q}")
+        if self.expires:
+            params.append(f"expires={self.expires}")
+        if self.params:
+            params.extend(f"{name}={value}" for name, value in self.params.items())
+        return f"{self.address}{';'.join(params)}"
+
+
+@dataclass(slots=True)
+class ContactHeader(Header):
+    """
+    Implements a SIP Contact header as described in :rfc:`3261#section-20.10`.
+    Multiple contacts might be present in a single header, separated by commas.
+    """
+
+    _name = "Contact"
+
+    contacts: List[Contact]
+
+    @classmethod
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
+        # TODO: check if we might encounter commas that do not represent multiple contacts
+        contacts = [Contact.parse(contact) for contact in re.split(r"\s*,\s*", value)]
+        return cls(contacts=contacts)
+
+    def serialize(self) -> str:
+        return ",".join(contact.serialize() for contact in self.contacts)
+
+
+@dataclass(slots=True)
+class CallIDHeader(StrHeader):
+    _name = "Call-ID"
+
+
+@dataclass(slots=True)
 class CSeqHeader(Header):
     _name = "CSeq"
 
     sequence: int
-    method: str
+    method: SIPMethod
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        sequence, method = value.split()
+        from .messages import SIPMethod
+
+        sequence, method_raw = value.split()
+        method = SIPMethod(method_raw)
         return cls(sequence=int(sequence), method=method)
 
     def serialize(self) -> str:
-        return f"{self.sequence} {self.method}"
+        return f"{self.sequence} {self.method.name}"
 
 
 @dataclass(slots=True)
@@ -265,8 +361,28 @@ class SupportedHeader(ListHeader):
 
 
 @dataclass(slots=True)
+class ExpiresHeader(IntHeader):
+    _name = "Expires"
+
+
+@dataclass(slots=True)
+class ContentTypeHeader(StrHeader):
+    _name = "Content-Type"
+
+
+@dataclass(slots=True)
 class ContentLengthHeader(IntHeader):
     _name = "Content-Length"
+
+
+@dataclass(slots=True)
+class MaxForwardsHeader(IntHeader):
+    _name = "Max-Forwards"
+
+
+@dataclass(slots=True)
+class UserAgentHeader(StrHeader):
+    _name = "User-Agent"
 
 
 @dataclass(slots=True)
@@ -283,7 +399,10 @@ class AuthorizationHeader(Header):
     cnonce: Optional[str] = None
     response: Optional[str] = None
     opaque: Optional[str] = None
+    stale: Optional[bool] = None
     auth_params: Optional[Dict[str, str]] = None
+
+    _no_quote_params: ClassVar[Set[str]] = {"algorithm", "stale", "qop", "nc"}
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
@@ -302,22 +421,29 @@ class AuthorizationHeader(Header):
         known_params = {
             name: value for name, value in params.items() if name in known_param_names
         }
+        if "stale" in known_params:
+            known_params["stale"] = known_params["stale"].lower() == "true"
         auth_params = {
             name: value for name, value in params.items() if name not in known_params
         }
         return cls(**known_params, auth_params=auth_params or None)
 
     def serialize(self) -> str:
-        params = []
+        params: List[Tuple[str, str]] = []
         for field in dataclass_fields(self):
             if field.name in ("auth_params",):
                 continue
             value = getattr(self, field.name)
             if value is not None:
-                params.append(f"{field.name}={value}")
+                params.append((field.name, str(value)))
         if self.auth_params:
-            params.extend(f"{name}={value}" for name, value in self.auth_params.items())
-        return f"Digest {', '.join(params)}"
+            # noinspection PyTypeChecker
+            params.extend(self.auth_params.items())
+        params = [
+            (name, (f'"{value}"' if name not in self._no_quote_params else str(value)))
+            for name, value in params
+        ]
+        return f"Digest {', '.join(f'{name}={value}' for name, value in params)}"
 
 
 @dataclass(slots=True)
@@ -326,6 +452,16 @@ class WWWAuthenticateHeader(AuthorizationHeader):
 
 
 class Headers(CaseInsensitiveDict[_H]):
+    def __init__(
+        self, *headers: Header, data: Optional[Mapping[str, _H]] = None, **kwargs
+    ):
+        if headers:
+            data = dict(data) if data else {}
+            for header in headers:
+                data[header.name] = header
+
+        super().__init__(data, **kwargs)
+
     @classmethod
     def parse(cls, raw_headers: bytes) -> Self:
         """

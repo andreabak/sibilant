@@ -61,8 +61,6 @@ class SDPField(Registry[str, "SDPField"], ABC):
     _type: ClassVar[str]
     _description: ClassVar[str]
 
-    raw_value: str
-
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
@@ -95,7 +93,7 @@ class SDPField(Registry[str, "SDPField"], ABC):
         :return: the field object
         """
         if hasattr(cls, "parse_raw_value"):
-            return cls(**cls.parse_raw_value(raw_value), raw_value=raw_value)
+            return cls(**cls.parse_raw_value(raw_value))
         raise NotImplementedError
 
     @abstractmethod
@@ -115,19 +113,13 @@ class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
     _name: ClassVar[Union[str, type(DEFAULT)]]
     _is_flag: ClassVar[Optional[bool]] = None
 
-    raw_value: Any
-
     @property
     def name(self) -> str:
         return self._name
 
     @property
-    def value(self) -> Any:
-        return self.raw_value
-
-    @property
     def is_flag(self) -> bool:
-        return self.value is None
+        return bool(self._is_flag)
 
     @classmethod
     def parse(cls, raw_data: str) -> Self:
@@ -183,14 +175,23 @@ class FlagAttribute(SDPAttribute, ABC):
 
     @classmethod
     def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
-        return cls(raw_value=None)
+        return cls()
 
     def serialize(self) -> str:
         raise ValueError("Flag attributes have no value to serialize")
 
 
 @dataclass(slots=True)
-class UnknownAttribute(SDPAttribute, ABC):
+class ValueAttribute(SDPAttribute, ABC):
+    value: Any
+
+    @classmethod
+    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
+        return cls(value=raw_value)
+
+
+@dataclass(slots=True)
+class UnknownAttribute(StrValueMixin, SDPAttribute, ABC):
     _name = DEFAULT
 
     attribute: str
@@ -201,12 +202,7 @@ class UnknownAttribute(SDPAttribute, ABC):
 
     @classmethod
     def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
-        return cls(attribute=name, raw_value=raw_value)
-
-    def serialize(self) -> str:
-        if self.raw_value is None:
-            raise ValueError("Cannot an attribute value without a value (flag)")
-        return self.raw_value
+        return cls(attribute=name, value=raw_value)
 
 
 class MediaFlowAttribute(FlagAttribute, ABC):
@@ -302,7 +298,6 @@ class SDPConnectionField(SDPField, ABC):
             address=address,
             ttl=ttl,
             number_of_addresses=number_of_addresses,
-            raw_value=raw_value,
         )
 
     def serialize(self) -> str:
@@ -326,7 +321,7 @@ class SDPBandwidthField(SDPField, ABC):
     @classmethod
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         bwtype, bandwidth = raw_value.split(":")
-        return cls(bwtype=bwtype, bandwidth=int(bandwidth), raw_value=raw_value)
+        return cls(bwtype=bwtype, bandwidth=int(bandwidth))
 
     def serialize(self) -> str:
         return f"{self.bwtype}:{self.bandwidth}"
@@ -352,7 +347,7 @@ class SDPEncryptionField(SDPField, ABC):
         method: str
         key: Optional[str]
         method, key = raw_value.split(":") if ":" in raw_value else (raw_value, None)
-        return cls(method=method, key=key, raw_value=raw_value)
+        return cls(method=method, key=key)
 
     def serialize(self) -> str:
         return f"{self.method}:{self.key}" if self.key else self.method
@@ -378,16 +373,12 @@ class SDPAttributeField(SDPField, ABC):
         return self.attribute.name
 
     @property
-    def value(self) -> Any:
-        return self.attribute.value
-
-    @property
     def is_flag(self) -> bool:
         return self.attribute.is_flag
 
     @classmethod
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
-        return cls(attribute=cls._attribute_cls.parse(raw_value), raw_value=raw_value)
+        return cls(attribute=cls._attribute_cls.parse(raw_value))
 
     def serialize(self) -> str:
         return str(self.attribute)

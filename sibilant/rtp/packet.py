@@ -16,6 +16,7 @@ from typing import (
     Callable,
 )
 
+
 try:
     from typing import Self
 except ImportError:
@@ -25,14 +26,15 @@ import numpy as np
 from cbitstruct import CompiledFormat
 
 from ..codecs import Codec, PCMUCodec, PCMACodec
+from ..constants import SUPPORTED_RTP_VERSIONS
 from ..helpers import FieldsEnum, dataclass, FieldsEnumDatatype
-from ..exceptions import RTPUnsupportedCodec
+from ..exceptions import RTPUnsupportedCodec, RTPUnsupportedVersion
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
 
 
-class RTPMediaType(enum.Flag):
+class RTPMediaType(enum.Enum):
     AUDIO = "audio"
     VIDEO = "video"
     AUDIO_VIDEO = "audio,video"
@@ -86,9 +88,8 @@ class RTPMediaProfiles(FieldsEnum):
     __wrapped_type__ = RTPMediaFormat
     __allow_unknown__ = True
 
-    payload_type: Union[
-        int, str
-    ]  # FIXME: should this be int only? (same in RTPMediaFormat)
+    # FIXME: should this be int only? (same in RTPMediaFormat)
+    payload_type: Union[int, str]
     media_type: RTPMediaType
     encoding_name: str
     clock_rate: int
@@ -226,6 +227,9 @@ class RTPPacket:
             timestamp,
             ssrc,
         ) = cls._format_u64.unpack(data)
+
+        if version not in SUPPORTED_RTP_VERSIONS:
+            raise RTPUnsupportedVersion(f"Unsupported RTP version: {version}")
 
         payload_type: RTPMediaProfiles = RTPMediaProfiles.match(payload_type_raw)
 
