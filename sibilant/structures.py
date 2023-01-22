@@ -104,8 +104,10 @@ class SIPAddress:
     uri: SIPURI
     display_name: Optional[str] = None
 
+    force_brackets: bool = False
+
     @classmethod
-    def parse(cls, value: str) -> Self:
+    def parse(cls, value: str, force_brackets: Optional[bool] = None) -> Self:
         """Parse a SIP address from a string. Optionally with a display name and phone number."""
         match: Optional[Match] = None
         for address_pat in ADDRESS_PATS:
@@ -120,10 +122,13 @@ class SIPAddress:
         display_name = match_groups.get("display_name")
         if display_name and display_name[0] in ("'", '"'):
             display_name = re.sub(r"^\s*([\"'])(.*?)\1\s*$", r"\2", display_name)
-        return cls(uri=uri, display_name=display_name)
+        if force_brackets is None:
+            force_brackets = bool(display_name)
+        return cls(uri=uri, display_name=display_name, force_brackets=force_brackets)
 
     def __str__(self) -> str:
         """Serialize the SIP address to a string."""
+        result: str = f"<{self.uri}>" if self.force_brackets else str(self.uri)
         if self.display_name:
-            return f'"{self.display_name}" <{self.uri}>'
-        return str(self.uri)
+            result = f'"{self.display_name}" {result}'
+        return result

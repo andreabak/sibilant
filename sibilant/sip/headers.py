@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import fields as dataclass_fields
+from dataclasses import fields as dataclass_fields, field as dataclass_field
 from typing import (
     ClassVar,
     Union,
@@ -31,7 +31,6 @@ from ..helpers import (
     DEFAULT,
     dataclass,
 )
-from ..constants import DEFAULT_SIP_PORT
 from ..structures import SIPAddress
 from ..exceptions import SIPParseError
 
@@ -170,13 +169,26 @@ class ViaHeader(Header):
 
     method: str
     address: str
-    port: int
+    port: Optional[int]
     branch: Optional[str] = None
     maddr: Optional[str] = None
     received: Optional[str] = None
-    rport: Optional[int] = None
     ttl: Optional[int] = None
-    extension: Optional[Dict[str, Optional[str]]] = None
+    extension: Dict[str, Optional[str]] = dataclass_field(default_factory=dict)
+
+    _order: Tuple[str, ...] = ()
+
+    @property
+    def rport(self) -> Union[bool, int, None]:
+        if self.extension and "rport" not in self.extension:
+            return int(self.extension["rport"]) if self.extension["rport"] else True
+        return None
+
+    @rport.setter
+    def rport(self, value: Union[bool, int, None]) -> None:
+        if value is None:
+            self.extension.pop("rport", None)
+        self.extension["rport"] = str(value) if isinstance(value, int) else None
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
@@ -185,10 +197,11 @@ class ViaHeader(Header):
             return previous_headers["Via"]
 
         method, address, *params = re.split(r"\s+|\s*;\s*", value.strip())
-        ip, port_str = (
-            address.split(":") if ":" in address else (address, str(DEFAULT_SIP_PORT))
-        )
-        port = int(port_str)
+
+        ip, port_str = address.split(":") if ":" in address else (address, None)
+        port = int(port_str) if port_str else None
+
+        order = []
         parsed_params = {}
         extension_params = {}
         for param in params:
@@ -197,32 +210,39 @@ class ViaHeader(Header):
             param_name, param_value = (
                 param.split("=", maxsplit=1) if "=" in param else (param, None)
             )
-            if param_name in ("rport", "ttl"):
+            if param_name in ("ttl",):
                 param_value = int(param_value) if param_value is not None else None
-            if param_name in ("branch", "maddr", "received", "rport", "ttl"):
+            if param_name in ("branch", "maddr", "received", "ttl"):
                 parsed_params[param_name] = param_value
             else:
                 extension_params[param_name] = param_value
+            order.append(param_name)
+
         return cls(
             method=method,
             address=ip,
             port=port,
             **parsed_params,
             extension=extension_params or None,
+            _order=tuple(order),
         )
 
     def serialize(self) -> str:
-        params = [
-            f"{param_name}={param_value}"
-            for param_name in ("branch", "maddr", "received", "rport", "ttl")
+        host = f"{self.address}:{self.port}" if self.port else self.address
+        params_dict = {
+            param_name: param_value
+            for param_name in ("branch", "maddr", "received", "ttl")
             if (param_value := getattr(self, param_name)) is not None
+        }
+        params_dict.update(self.extension or {})
+        sorted_params = {**dict.fromkeys(self._order), **params_dict}
+        params = [
+            f";{param_name}={param_value}"
+            if param_value is not None
+            else f";{param_name}"
+            for param_name, param_value in (sorted_params.items())
         ]
-        if self.extension:
-            params.extend(
-                f"{param_name}={param_value}"
-                for param_name, param_value in self.extension.items()
-            )
-        return f"{self.method} {self.address}:{self.port} {';'.join(params)}"
+        return f"{self.method} {host}{''.join(params)}"
 
 
 @dataclass(slots=True)
@@ -265,16 +285,43 @@ class Contact:
     """
 
     address: SIPAddress
-    q: Optional[float] = None
-    expires: Optional[int] = None
-    params: Optional[Dict[str, Optional[str]]] = None
+    params: Dict[str, Optional[str]] = dataclass_field(default_factory=dict)
+
+    @property
+    def q(self) -> Optional[float]:
+        return float(self.params["q"]) if self.params and "q" in self.params else None
+
+    @q.setter
+    def q(self, value: Optional[float]) -> None:
+        if self.params is None:
+            self.params = {}
+        if value is None:
+            self.params.pop("q", None)
+        else:
+            self.params["q"] = str(value)
+
+    @property
+    def expires(self) -> Optional[int]:
+        return (
+            int(self.params["expires"])
+            if self.params and "expires" in self.params
+            else None
+        )
+
+    @expires.setter
+    def expires(self, value: Optional[int]) -> None:
+        if self.params is None:
+            self.params = {}
+        if value is None:
+            self.params.pop("expires", None)
+        else:
+            self.params["expires"] = str(value)
 
     @classmethod
     def parse(cls, value: str) -> Self:
-        q: Optional[float] = None
-        expires: Optional[int] = None
-        params: Optional[Dict[str, Optional[str]]] = None
+        params: Dict[str, Optional[str]] = {}
 
+        force_brackets: bool = "<" in value and ">" in value
         if ";" in value:  # there are parameters, address will be in <...> form.
             address_raw, *params_raw = re.split(r"(?<=>)\s*;\s*", value, maxsplit=1)
             if params_raw:
@@ -282,27 +329,17 @@ class Contact:
                     param_name, param_value = param.split("=", maxsplit=1)
                     param_name = param_name.strip()
                     param_value = param_value.strip()
-                    if param_name == "q":
-                        q = float(param_value)
-                    elif param_name == "expires":
-                        expires = int(param_value)
-                    else:
-                        params[param_name] = param_value
+                    params[param_name] = param_value
+            force_brackets = True
         else:
             address_raw = value
 
-        address = SIPAddress.parse(address_raw.strip())
-        return cls(address=address, q=q, expires=expires, params=params)
+        address = SIPAddress.parse(address_raw.strip(), force_brackets=force_brackets)
+        return cls(address=address, params=params)
 
     def serialize(self) -> str:
-        params = []
-        if self.q:
-            params.append(f"q={self.q}")
-        if self.expires:
-            params.append(f"expires={self.expires}")
-        if self.params:
-            params.extend(f"{name}={value}" for name, value in self.params.items())
-        return f"{self.address}{';'.join(params)}"
+        params = [f";{name}={value}" for name, value in self.params.items()]
+        return f"{self.address}{''.join(params)}"
 
 
 @dataclass(slots=True)
@@ -402,6 +439,8 @@ class AuthorizationHeader(Header):
     stale: Optional[bool] = None
     auth_params: Optional[Dict[str, str]] = None
 
+    _order: Tuple[str, ...] = ()
+
     _no_quote_params: ClassVar[Set[str]] = {"algorithm", "stale", "qop", "nc"}
 
     @classmethod
@@ -426,22 +465,28 @@ class AuthorizationHeader(Header):
         auth_params = {
             name: value for name, value in params.items() if name not in known_params
         }
-        return cls(**known_params, auth_params=auth_params or None)
+        return cls(
+            **known_params, auth_params=auth_params or None, _order=tuple(params)
+        )
 
     def serialize(self) -> str:
-        params: List[Tuple[str, str]] = []
+        params_dict: Dict[str, str] = {}
         for field in dataclass_fields(self):
-            if field.name in ("auth_params",):
+            if field.name in ("auth_params", "_order"):
                 continue
             value = getattr(self, field.name)
             if value is not None:
-                params.append((field.name, str(value)))
+                str_value = str(value)
+                if isinstance(value, bool):
+                    str_value = str_value.upper()
+                params_dict[field.name] = str_value
         if self.auth_params:
             # noinspection PyTypeChecker
-            params.extend(self.auth_params.items())
+            params_dict.update(self.auth_params)
+        sorted_params = {**dict.fromkeys(self._order), **params_dict}
         params = [
             (name, (f'"{value}"' if name not in self._no_quote_params else str(value)))
-            for name, value in params
+            for name, value in sorted_params.items()
         ]
         return f"Digest {', '.join(f'{name}={value}' for name, value in params)}"
 

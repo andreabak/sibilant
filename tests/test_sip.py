@@ -1,4 +1,5 @@
 import logging
+import re
 import socket
 import threading
 import time
@@ -18,6 +19,7 @@ from sibilant.sip import (
     SIPCall,
     SIPMethod,
     SIPStatus,
+    Header,
     Headers,
 )
 from .conftest import MockServer, Dest
@@ -28,22 +30,76 @@ _logger = logging.getLogger(__name__)
 
 class TestSIPMessages:
     def test_parse(self, sip_packets):
-        """Test that all the sample SIP messages can be parsed."""
+        """Test that all the sample SIP messages can be parsed without critical errors."""
+        for packet in sip_packets:
+            SIPMessage.parse(packet.data)
+            # TODO: do asserts making sure (somehow) that parse->serialize == input
+
+    def test_headers(self, sip_packets):
+        """Test that all the sample SIP messages have the correct headers."""
         for packet in sip_packets:
             message = SIPMessage.parse(packet.data)
-            # TODO: do asserts making sure (somehow) that parse->serialize == input
+            headers = message.headers
 
-    def test_parse_requests(self, sip_requests):
-        """Test that all the sample requests can be parsed."""
-        for packet in sip_requests:
-            request = SIPRequest.parse(packet.data)
-            # TODO: do asserts making sure (somehow) that parse->serialize == input
+            raw_headers_lines = (
+                packet.data.decode().split("\r\n\r\n", 1)[0].split("\r\n")[1:]
+            )
+            raw_headers = dict(tuple(line.split(": ", 1)) for line in raw_headers_lines)
+            assert list(headers.keys()) == list(
+                raw_headers.keys()
+            ), "Headers should be in the same order as the original message"
 
-    def test_parse_responses(self, sip_responses):
-        """Test that all the sample responses can be parsed."""
-        for packet in sip_responses:
-            response = SIPResponse.parse(packet.data)
-            # TODO: do asserts making sure (somehow) that parse->serialize == input
+            def clean(s):
+                """Clean headers for comparison"""
+                if not s.endswith("\r\n"):
+                    s += "\r\n"
+                # remove extra whitespace in each header, collapse to a single space
+                s = re.sub(r"( |(?<!\r)\n)+", " ", s)
+                # remove whitespace around commas
+                s = re.sub(r"\s*,\s*", ",", s)
+                # make all bool values uppercase
+                s = re.sub(
+                    r"\b(false|true)\b", lambda m: m.group(1).upper(), s, flags=re.I
+                )
+                # remove unnecessary quotes from nc=
+                s = re.sub(r'\bnc="(\w+)"', r"nc=\1", s, flags=re.I)
+                # add quotes when missing in display name before <sip:...>
+                s = re.sub(r"(\w+) *(?=<sip:)", r'"\1" ', s)
+                # strip leading and trailing whitespace in each line
+                s = re.sub(r"^ +| +$", "", s, flags=re.M)
+                # remove extra Via headers
+                s = re.sub(r"^(Via:.*\r\n)(?:Via:.*\r\n)+", r"\1", s)
+                return s.strip()
+
+            assert clean(str(headers)) == clean(
+                "\r\n".join(raw_headers_lines)
+            ), "Headers should serialize to the same string as the original message"
+
+            previous_headers = Headers()
+            for header in headers.values():
+                hdr_cls_name = header.__class__.__name__
+                assert (
+                    header.name in headers
+                ), f"{hdr_cls_name}: header name should be in Headers map"
+                assert (
+                    header.name.upper() in headers and header.name.lower() in headers
+                ), f"{hdr_cls_name}: headers should be case-insensitive"
+
+                serialized_value = header.serialize()
+                rebuilt_header = Header.parse(
+                    header.name, serialized_value, previous_headers
+                )
+                assert (
+                    rebuilt_header.serialize() == serialized_value
+                ), f"{hdr_cls_name}: value should serialize without loss"
+                assert str(rebuilt_header) == str(
+                    header
+                ), f"{hdr_cls_name}: entire header should serialize without loss"
+                assert (
+                    rebuilt_header == header
+                ), f"{hdr_cls_name}: should be able to be rebuilt and still match"
+
+                previous_headers[header.name] = rebuilt_header
 
 
 PacketAndSIPMessage = namedtuple("PacketAndSIPMessage", ["packet", "message"])
