@@ -607,7 +607,7 @@ class SIPMessage(ABC):
             body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body)
         except Exception as e:
-            raise SIPParseError(f"Failed to parse SIP message: {e}") from e
+            raise SIPParseError(f"Failed to parse SIP message: {e}\n{data}") from e
 
     @classmethod
     @abstractmethod
@@ -643,6 +643,10 @@ class SIPMessage(ABC):
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}> {self.start_line}"
 
+    @abstractmethod
+    def __eq__(self, other: Any) -> bool:
+        """Check if two SIP messages are equal."""
+
 
 class SIPRequest(SIPMessage):
     def __init__(
@@ -668,6 +672,12 @@ class SIPRequest(SIPMessage):
             method=SIPMethod(method_raw), uri=SIPURI.parse(uri_raw), version=version
         )
 
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, SIPRequest) and (
+            (self.method, self.uri, self.version, self.headers, self.body)
+            == (other.method, other.uri, other.version, other.headers, other.body)
+        )
+
 
 class SIPResponse(SIPMessage):
     def __init__(
@@ -690,3 +700,9 @@ class SIPResponse(SIPMessage):
         status: SIPStatus = SIPStatus(int(code))
         status.reason = reason
         return dict(status=status, version=version)
+
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, SIPResponse) and (
+            (self.status, self.version, self.headers, self.body)
+            == (other.status, other.version, other.headers, other.body)
+        )

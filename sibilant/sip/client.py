@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import enum
 import hashlib
 import logging
@@ -27,6 +28,7 @@ from typing import (
     Callable,
     Any,
     Coroutine,
+    Collection,
 )
 
 from ..helpers import SupportsStr
@@ -79,15 +81,17 @@ def generate_cseq() -> int:
     return random.randrange(0, 2**31)
 
 
-# coro that waits for a response to a request, handling and discarding TRYING messages
-async def discard_trying(msg_getter: Callable[[], Awaitable[SIPMessage]]) -> SIPMessage:
+async def discard_statuses(
+    msg_getter: Callable[[], Awaitable[SIPMessage]],
+    statuses: Collection[SIPStatus] = (SIPStatus.TRYING,),
+) -> SIPMessage:
     """Await for the next response, ignoring TRYING responses."""
     # TODO: if you do the wait within here, you could log the trying messages received while waiting for the response
-    trying_count = 0
+    discarded_count = 0
     while True:
         message: SIPMessage = await msg_getter()
-        if isinstance(message, SIPResponse) and message.status == SIPStatus.TRYING:
-            trying_count += 1
+        if isinstance(message, SIPResponse) and message.status in statuses:
+            discarded_count += 1
             continue
 
         return message
@@ -240,21 +244,26 @@ class SIPDialogue(ABC):
         """Handle an incoming SIP message."""
 
     async def _wait_for_message(
-        self, timeout: Optional[float] = None, ignore_trying: bool = True
+        self,
+        timeout: Optional[float] = None,
+        discard_trying: bool = True,
+        more_discard_statuses: Collection[SIPStatus] = (),
     ) -> SIPMessage:
         """
         Wait for the next message to arrive in the queue.
 
         :param timeout: The timeout for the wait. None for default, -1 for no timeout.
-        :param ignore_trying: Whether to discard TRYING responses.
+        :param discard_trying: Whether to discard TRYING responses.
         :return: The next message.
         :raises asyncio.TimeoutError: If the timeout is reached.
         """
         if timeout is None:
             timeout = self._response_timeout
         msg_getter: Callable[[], Awaitable[SIPMessage]] = self._recv_queue.get
-        if ignore_trying:
-            msg_getter = partial(discard_trying, msg_getter)
+        if discard_trying or more_discard_statuses:
+            statuses: Collection[SIPStatus] = more_discard_statuses
+            statuses += (SIPStatus.TRYING,) if discard_trying else ()
+            msg_getter = partial(discard_statuses, msg_getter, statuses=statuses)
         if timeout != -1:
             msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
         self._expecting_msg = True
@@ -515,18 +524,27 @@ class SIPCall(SIPDialogue):
     def state(self) -> CallState:
         return self._state
 
+    @contextlib.asynccontextmanager
+    async def _handle_errors(self):
+        try:
+            yield
+        # TODO: better handle other exceptions, like bad request, and send appropriate response
+        except Exception as exc:
+            self._state = CallState.FAILED
+            self._failure_exc = exc
+            self._close()
+            raise
+
+    async def invite(self) -> None:
+        async with self._handle_errors():
+            await self._invite_send_transaction()
+
     async def _handle_message(self, message: SIPMessage) -> None:
         """Handle an incoming SIP message, and start the appropriate flow"""
         if isinstance(message, SIPRequest):
             if message.method == SIPMethod.INVITE:
-                try:
+                async with self._handle_errors():
                     return await self._invite_recv_transaction(message)
-                # TODO: better handle other exceptions, like bad request, and send appropriate response
-                except Exception as exc:
-                    self._state = CallState.FAILED
-                    self._failure_exc = exc
-                    self._close()
-                    raise
             elif message.method == SIPMethod.BYE:
                 return await self._bye_recv_transaction(message)
 
@@ -627,7 +645,13 @@ class SIPCall(SIPDialogue):
         invite: SIPRequest = await self._send_invite(rtp_profiles_by_port, media_flow)
 
         # TODO: have a way for client to terminate call attempt while we're waiting (catch raise? idk)
-        response: SIPMessage = await self._wait_for_message()
+        response: SIPMessage
+        while (
+            isinstance((response := await self._wait_for_message()), SIPResponse)
+            and response.status == SIPStatus.RINGING
+        ):
+            self._state = CallState.RINGING
+
         if isinstance(response, SIPResponse) and response.status == SIPStatus.OK:
             self._state = CallState.ANSWERING
 
@@ -706,10 +730,12 @@ class SIPCall(SIPDialogue):
 
     def _ack_request(self, invite: SIPRequest) -> SIPRequest:
         """Create an ACK request."""
-        invite_cseq = invite.headers.get("CSeq")
+        invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
         if invite_cseq is None:
             raise RuntimeError("INVITE request has no CSeq header")
-        return self._generate_request(SIPMethod.ACK, cseq=invite_cseq)
+        return self._generate_request(
+            SIPMethod.ACK, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+        )
 
     def _ringing_response(self, request: SIPRequest) -> SIPResponse:
         """Create a 180 Ringing response to an INVITE request."""
@@ -735,6 +761,7 @@ class SIPCall(SIPDialogue):
 
     def _busy_response(self, request: SIPRequest) -> SIPResponse:
         """Create a 486 Busy Here response to an INVITE request."""
+        # TODO: add a Warning header?
         return self._generate_response_from_request(request, SIPStatus.BUSY_HERE)
 
     def _terminated_response(self, request: SIPRequest) -> SIPResponse:
@@ -1218,6 +1245,24 @@ class SIPClient:
             self._schedule(_deregister()).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
+
+    # TODO: should this be async? or should it be blocking?
+    def invite(self, contact: Union[SIPAddress, SIPURI, str]) -> SIPCall:
+        if isinstance(contact, str):
+            if "@" not in contact:
+                contact = SIPURI(
+                    host=self.server_host, port=self.server_port, user=contact
+                )
+            else:
+                contact = SIPAddress.parse(contact)
+        elif isinstance(contact, SIPURI):
+            contact = SIPAddress(uri=contact)
+        elif not isinstance(contact, SIPAddress):
+            raise TypeError(f"Invalid type for contact {type(contact)}: {contact!r}")
+
+        call = SIPCall(self, to=contact)
+        self._schedule(call.invite())
+        return call
 
     # TODO: start invite
 

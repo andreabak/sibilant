@@ -379,7 +379,7 @@ class CSeqHeader(Header):
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
         from .messages import SIPMethod
 
-        sequence, method_raw = value.split()
+        sequence, method_raw = value.split(maxsplit=1)
         method = SIPMethod(method_raw)
         return cls(sequence=int(sequence), method=method)
 
