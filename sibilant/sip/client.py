@@ -53,6 +53,7 @@ from ..structures import SIPURI, SIPAddress
 from . import headers as hdr
 from .messages import SIPResponse, SIPRequest, SIPMessage, SIPMethod, SIPStatus
 
+
 _logger = logging.getLogger(__name__)
 
 
@@ -165,6 +166,7 @@ class SIPDialogue(ABC):
         from_tag: Optional[str] = None,
         call_id: Optional[str] = None,
         cseq: Optional[int] = None,
+        response_timeout: Optional[float] = None,
     ):
         self._client: SIPClient = client
 
@@ -181,6 +183,9 @@ class SIPDialogue(ABC):
 
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
         self._expecting_msg: bool = False
+        if response_timeout is None:
+            response_timeout = self._client.default_response_timeout
+        self._response_timeout: float = response_timeout
 
         self._closed: bool = False
 
@@ -235,12 +240,22 @@ class SIPDialogue(ABC):
         """Handle an incoming SIP message."""
 
     async def _wait_for_message(
-        self, timeout: Optional[float] = 32.0, ignore_trying: bool = True
+        self, timeout: Optional[float] = None, ignore_trying: bool = True
     ) -> SIPMessage:
+        """
+        Wait for the next message to arrive in the queue.
+
+        :param timeout: The timeout for the wait. None for default, -1 for no timeout.
+        :param ignore_trying: Whether to discard TRYING responses.
+        :return: The next message.
+        :raises asyncio.TimeoutError: If the timeout is reached.
+        """
+        if timeout is None:
+            timeout = self._response_timeout
         msg_getter: Callable[[], Awaitable[SIPMessage]] = self._recv_queue.get
         if ignore_trying:
             msg_getter = partial(discard_trying, msg_getter)
-        if timeout is not None:
+        if timeout != -1:
             msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
         self._expecting_msg = True
         try:
@@ -344,7 +359,8 @@ class SIPRegistration(SIPDialogue):
                 raise SIPBadResponse("Unexpected response for REGISTER: {response!r}")
 
             if response.status == SIPStatus.UNAUTHORIZED:
-                if authorization is not None:
+                nonce_changed = "nonce" in response.status.reason
+                if authorization is not None and not nonce_changed:
                     raise SIPAuthenticationError(
                         "Failed to authenticate with given credentials"
                     )
@@ -384,6 +400,7 @@ class SIPRegistration(SIPDialogue):
             call_later(keep_alive_interval, self.register()),
             name=f"{self.__class__.__name__}.keep_alive-{id(self._client)} task",
         )
+        self._client._pending_futures.append(self._keep_alive_task)
 
     async def _cancel_keep_alive(self):
         if self._keep_alive_task is not None:
@@ -400,11 +417,10 @@ class SIPRegistration(SIPDialogue):
         self._registered = True
         await self._schedule_keep_alive()
 
-    async def deregister(self, send_expires: bool = True):
+    async def deregister(self):
         await self._cancel_keep_alive()
         try:
-            if send_expires:
-                await self._register_transaction(deregister=True)
+            await self._register_transaction(deregister=True)
         finally:
             self._registered = False
             self._close()
@@ -482,6 +498,7 @@ class SIPCall(SIPDialogue):
         )
 
         self._state: CallState = CallState.INIT
+        self._failure_exc: Optional[Exception] = None
 
     @classmethod
     def from_invite(cls, client: SIPClient, invite: SIPRequest) -> Self:
@@ -491,8 +508,12 @@ class SIPCall(SIPDialogue):
             to=invite.headers["To"],
             from_header=invite.headers["From"],
             call_id=invite.headers["Call-ID"].value,
-            cseq=invite.headers["CSeq"].seq,
+            cseq=invite.headers["CSeq"].sequence,
         )
+
+    @property
+    def state(self) -> CallState:
+        return self._state
 
     async def _handle_message(self, message: SIPMessage) -> None:
         """Handle an incoming SIP message, and start the appropriate flow"""
@@ -500,8 +521,10 @@ class SIPCall(SIPDialogue):
             if message.method == SIPMethod.INVITE:
                 try:
                     return await self._invite_recv_transaction(message)
-                except Exception:
+                # TODO: better handle other exceptions, like bad request, and send appropriate response
+                except Exception as exc:
                     self._state = CallState.FAILED
+                    self._failure_exc = exc
                     self._close()
                     raise
             elif message.method == SIPMethod.BYE:
@@ -556,7 +579,7 @@ class SIPCall(SIPDialogue):
                 await self._reply_terminated(request)
                 self._close()
                 return
-            # TODO: catch exceptions raised and set CallState.FAILED, send something back?
+
             raise SIPBadResponse(
                 f"Unexpected message while waiting for answer: {request!r}"
             )
@@ -574,18 +597,21 @@ class SIPCall(SIPDialogue):
             media_flow: rtp.MediaFlowType = self._client.phone.get_default_media_flow()
 
             await self._reply_answer(invite, rtp_profiles_by_port, media_flow)
-            request: SIPMessage = await self._wait_for_message()
-            if isinstance(request, SIPRequest) and request.method == SIPMethod.ACK:
-                self._follow_cseq(request)
-                self._state = CallState.ESTABLISHED
-                self._client.phone.establish_call(self)
-                return
-            # TODO: catch exceptions raised and set CallState.FAILED, send something back?
+            try:
+                request: SIPMessage = await self._wait_for_message()
+                if isinstance(request, SIPRequest) and request.method == SIPMethod.ACK:
+                    self._follow_cseq(request)
+                    self._state = CallState.ESTABLISHED
+                    self._client.phone.establish_call(self)
+                    return
+            except asyncio.TimeoutError as e:
+                raise SIPTimeout("ACK never received after 200 OK") from e
+
             raise SIPBadResponse(
                 f"Unexpected message while waiting for ACK: {request!r}"
             )
 
-        raise RuntimeError("INVITE never answered, nor CANCELLED")
+        raise RuntimeError("INVITE never answered by phone, nor CANCELLED by caller")
 
     async def _invite_send_transaction(self):
         """Start an outgoing INVITE request, wait for 200 OK."""
@@ -621,6 +647,8 @@ class SIPCall(SIPDialogue):
 
         if self._state not in (CallState.ESTABLISHED, CallState.ANSWERING):
             raise SIPException("Cannot handle incoming BYE in current state")
+
+        _logger.debug(f"Received BYE request, terminating call: {bye!r}")
 
         self._follow_cseq(bye)
 
@@ -800,6 +828,9 @@ class SIPCall(SIPDialogue):
         await self._send_message(terminated_response)
         return terminated_response
 
+    # TODO: invite method to start a call, start transaction
+    # TODO: bye method to end a call, start transaction
+
     # TODO: make sure `to` has a tag after we get 200 OK / INVITE
 
 
@@ -821,7 +852,7 @@ class SIPClient:
         register_attempts: int = 5,
         register_timeout: float = 30.0,
         register_expires: int = 3600,
-        skip_deregister: bool = True,
+        default_response_timeout: float = 32.0,
         max_forwards: int = 70,
     ):
         self._phone: AbstractVoIPPhone = phone
@@ -835,12 +866,12 @@ class SIPClient:
         self._server_addr: Tuple[str, int] = (server_host, server_port)
         self._local_addr: Tuple[str, int] = (local_host, local_port)
 
+        self._default_response_timeout: float = default_response_timeout
         self._max_forwards: int = max_forwards
 
         self._register_attempts: int = register_attempts
         self._register_timeout: float = register_timeout
         self._register_expires: int = register_expires
-        self._skip_deregister: bool = skip_deregister
         self._register_dialogue: Optional[SIPRegistration] = None
 
         self._dialogues: MutableMapping[str, SIPDialogue] = {}
@@ -853,6 +884,7 @@ class SIPClient:
             target=self._run_event_loop,
             name=f"{self.__class__.__name__}._run_event_loop-{id(self)}",
         )
+        self._pending_futures: List[asyncio.Future] = []
 
         # FIXME: wouldn't it be easier to use async to handle dialogues / callbacks?
         #        we could keep threads for the UDP socket and use a queue to pass msgs
@@ -864,7 +896,7 @@ class SIPClient:
         self._registered: bool = False
         self._recv_thread: Optional[threading.Thread] = None
 
-        self._closed: bool = False
+        self._closed: bool = True
         self._closing_event: threading.Event = threading.Event()
         self._closing_event.clear()
 
@@ -943,6 +975,14 @@ class SIPClient:
         return bool(self._register_dialogue and self._register_dialogue.registered)
 
     @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def default_response_timeout(self) -> float:
+        return self._default_response_timeout
+
+    @property
     def calls(self) -> Mapping[str, SIPDialogue]:
         return {
             call_id: dialogue
@@ -972,6 +1012,8 @@ class SIPClient:
             if self._socket is not None:
                 raise RuntimeError("SIP client already started")
 
+            self._closed = False
+
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setsockopt(
                 socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024
@@ -998,11 +1040,13 @@ class SIPClient:
         if self.registered:
             self._deregister()
 
-        self._event_loop.call_soon_threadsafe(self._event_loop.stop)
-        if self._event_loop_thread.is_alive():
-            self._event_loop_thread.join()
-
         self._closing_event.set()
+
+        # TODO: graceful shutdown of active dialogs (send bye etc)
+        if threading.current_thread() is not self._event_loop_thread:
+            if self._event_loop_thread.is_alive():
+                self._event_loop_thread.join()
+
         if self._recv_thread is not None and self._recv_thread.is_alive():
             self._recv_thread.join()
         if self._socket is not None:
@@ -1020,15 +1064,54 @@ class SIPClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
+    # FIXME: we want errors raised in the event loop thread to stop the main loop
     def _run_event_loop(self):
         asyncio.set_event_loop(self._event_loop)
         try:
-            self._event_loop.run_forever()
+            self._event_loop.run_until_complete(self._async_monitor())
         finally:
-            self._event_loop.run_until_complete(self._event_loop.shutdown_asyncgens())
+            self._event_loop.stop()
             self._event_loop.close()
+            if not self._closing_event.is_set():
+                self.stop()
 
-        # TODO: we need a monitor task or here to check if something failed?
+    async def _async_monitor(self):
+        """
+        Async loop that monitors pending tasks for any exceptions and makes sure
+        everything is cleaned up when stopping.
+        """
+        terminate_asap: bool = False
+        while (
+            not (self._closing_event.is_set() or terminate_asap)
+            or self._pending_futures
+        ):
+            fut: asyncio.Future
+            for fut in list(self._pending_futures):
+                if fut.done():
+                    if not fut.cancelled() and (exc := fut.exception()) is not None:
+                        context = {
+                            "message": f"Exception in SIP client async: {exc}",
+                            "exception": exc,
+                            "future": fut,
+                        }
+                        self._event_loop.call_exception_handler(context)
+
+                    self._pending_futures.remove(fut)
+
+                elif self._closing_event.is_set() or terminate_asap:
+                    fut.cancel()
+
+            if (
+                not (self._closing_event.is_set() or terminate_asap)
+                and self._register_dialogue is not None
+                and self._register_dialogue.closed
+            ):
+                _logger.error("Registration or keep-alive failed, stopping client")
+                terminate_asap = True
+
+            await asyncio.sleep(1e-2)
+
+        await self._event_loop.shutdown_asyncgens()
 
     def _handle_loop_exception(
         self, loop: asyncio.AbstractEventLoop, context: Mapping[str, Any]
@@ -1037,13 +1120,19 @@ class SIPClient:
         message: str = (
             f"Exception in event loop: {context['message']}\nContext: {context!r}"
         )
+        exception = context.get("exception")
+        # FIXME: this does not work, will stop the async loop thread at most
+        # if exception is not None and not isinstance(exception, (asyncio.CancelledError, SIPException)):
+        #     raise exception
         if _logger.getEffectiveLevel() <= logging.DEBUG:
-            _logger.exception(message, exc_info=context.get("exception"))
+            _logger.exception(message, exc_info=exception)
         else:
             _logger.error(message)
 
     def _schedule(self, coro) -> asyncio.Future:
-        return asyncio.run_coroutine_threadsafe(coro, self._event_loop)
+        future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
+        self._pending_futures.append(future)
+        return future
 
     def _recv_msg(self, timeout: Optional[float] = None) -> SIPMessage:
         start_time: float = time.monotonic()
@@ -1092,7 +1181,7 @@ class SIPClient:
 
         if call_id in self._dialogues:
             await self._dialogues[call_id].receive_message(message)
-        elif isinstance(message, SIPRequest) and message.method == "INVITE":
+        elif isinstance(message, SIPRequest) and message.method == SIPMethod.INVITE:
             await self._handle_invite(message)
         else:
             _logger.warning(
@@ -1121,8 +1210,12 @@ class SIPClient:
         if self._register_dialogue is None:
             raise RuntimeError("Registration not active")
 
+        async def _deregister():
+            await self._register_dialogue.deregister()
+            self._register_dialogue = None
+
         try:
-            self._schedule(self._register_dialogue.deregister(send_expires=not self._skip_deregister)).result()
+            self._schedule(_deregister()).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
 
@@ -1133,7 +1226,8 @@ class SIPClient:
 
         # TODO: sanity check the message has From etc.
         _logger.debug(f"Received INVITE {message.headers['From']}: {message!r}")
-        SIPCall.from_invite(self, message)
+        call = SIPCall.from_invite(self, message)
+        await call.receive_message(message)
 
     def prepare_headers(
         self,
@@ -1151,7 +1245,10 @@ class SIPClient:
         body: Optional[SupportsStr] = None,
     ) -> hdr.Headers:
         if body and content_type is None:
-            raise ValueError("Cannot have body without content type")
+            if hasattr(body, "mimetype"):
+                content_type = body.mimetype
+            else:
+                raise ValueError("Cannot have body without content type")
 
         if call_id is None:  # TODO: make this mandatory?
             call_id = generate_call_id(*self.local_addr)

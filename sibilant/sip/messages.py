@@ -687,4 +687,6 @@ class SIPResponse(SIPMessage):
     @classmethod
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
         version, code, reason = start_line.decode("utf-8").split(" ", 2)
-        return dict(status=SIPStatus(int(code)), version=version)
+        status: SIPStatus = SIPStatus(int(code))
+        status.reason = reason
+        return dict(status=status, version=version)

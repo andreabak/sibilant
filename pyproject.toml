@@ -11,3 +11,6 @@ license = {text = "MPL-2.0"}
 
 [tool.setuptools]
 license-files = ["LICENSE"]
+
+[tool.pytest.ini_options]
+addopts = "-vrxPs --cov=sibilant"

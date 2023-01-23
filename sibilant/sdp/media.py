@@ -81,7 +81,7 @@ class SDPMediaMedia(SDPMediaFields):
     port: int
     number_of_ports: Optional[int]
     protocol: str
-    formats: List[str]
+    formats: List[int]
 
     def __post_init__(self):
         if self.port % 2 != 0:
@@ -105,11 +105,12 @@ class SDPMediaMedia(SDPMediaFields):
             port=port,
             number_of_ports=number_of_ports,
             protocol=protocol,
-            formats=formats,
+            formats=[int(x) for x in formats],
         )
 
     def serialize(self) -> str:
-        return f"{self.media} {self.port} {self.protocol} {' '.join(self.formats)}"
+        formats_joined: str = " ".join(str(x) for x in self.formats)
+        return f"{self.media} {self.port} {self.protocol} {formats_joined}"
 
 
 @dataclass(slots=True)

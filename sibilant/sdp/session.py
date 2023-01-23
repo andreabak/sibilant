@@ -381,6 +381,10 @@ class SDPSession(SDPSection):
             raise ValueError("SDP session must have at least one time field")
 
     @property
+    def mimetype(self) -> str:
+        return "application/sdp"
+
+    @property
     def media_flow_type(self) -> Optional[MediaFlowType]:
         return get_media_flow_type(self.attributes)
 
