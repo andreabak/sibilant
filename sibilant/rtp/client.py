@@ -8,13 +8,15 @@ import threading
 import time
 from io import RawIOBase
 from collections import deque
+from types import MappingProxyType
 from typing import IO, Deque, Optional, Mapping, Any, Union, Tuple, Collection
 
+import errno
 import numpy as np
 
 from . import RTPMediaProfiles, RTPPacketsStats, RTPMediaFormat, RTPMediaType, DTMFEvent
 from .packet import RTPPacket
-from ..constants import SUPPORTED_RTP_PROFILES
+from ..constants import SUPPORTED_RTP_PROFILES, DEFAULT_RTP_PORT_RANGE
 from ..exceptions import (
     RTPBrokenStreamError,
     RTPMismatchedStreamError,
@@ -324,15 +326,16 @@ class RTPClient:
     def __init__(
         self,
         local_addr: Tuple[str, int],
-        remote_addr: Tuple[str, int],
+        remote_addr: Optional[Tuple[str, int]],
         media_formats: Union[
             Collection[Union[RTPMediaFormat, RTPMediaProfiles]],
             Mapping[int, Union[RTPMediaFormat, RTPMediaProfiles]],
         ],
         send_delay_factor: float = 1.0,
+        pre_bind: bool = True,
     ):
         self._local_addr: Tuple[str, int] = local_addr
-        self._remote_addr: Tuple[str, int] = remote_addr
+        self._remote_addr: Optional[Tuple[str, int]] = remote_addr
 
         if not isinstance(media_formats, Mapping):
             media_formats = {f.payload_type: f for f in media_formats}
@@ -344,6 +347,7 @@ class RTPClient:
             )
             for payload_type, media_format in media_formats.items()
         }
+        # TODO: make sure the telephone-event profile has a concrete int payload type now
 
         # FIXME: should we have separate profiles for sending and receiving?
         # try to find a supported format and use that as RTPMediaProfile for the streams
@@ -360,9 +364,14 @@ class RTPClient:
         self._recv_stream: RTPStreamBuffer = self._create_recv_stream()
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
-        # FIXME: using two sockets doesn't make a difference, refactor into one
+        # FIXME: using two sockets doesn't seem to make a difference, refactor into one?
         self._recv_socket: Optional[socket.socket] = None
         self._send_socket: Optional[socket.socket] = None
+
+        if pre_bind:
+            self._recv_socket = self._create_recv_socket()
+            assert self._recv_socket.family == socket.AF_INET
+            self._local_addr = self._recv_socket.getsockname()
 
         self._recv_thread: Optional[threading.Thread] = None
         self._send_thread: Optional[threading.Thread] = None
@@ -371,15 +380,52 @@ class RTPClient:
         self._recv_stats: RTPPacketsStats = RTPPacketsStats()
         self._send_stats: RTPPacketsStats = RTPPacketsStats()
 
-        self._closed: bool = False
         self._closing_event: threading.Event = threading.Event()
         self._closing_event.clear()
 
-    def _create_recv_stream(self) -> RTPStreamBuffer:
-        return RTPStreamBuffer(mode="w")
+    @property
+    def remote_addr(self) -> Tuple[str, int]:
+        return self._remote_addr
 
-    def _create_send_stream(self) -> RTPStreamBuffer:
-        return RTPStreamBuffer(mode="r", profile=self._profile)
+    @remote_addr.setter
+    def remote_addr(self, value: Optional[Tuple[str, int]]) -> None:
+        if self._send_socket is not None:
+            raise RuntimeError("Cannot change remote address after starting RTP client")
+        if value is not None and value[1] == 0:
+            raise ValueError("Remote RTP port must be non-zero")
+        self._remote_addr = value
+
+    @property
+    def remote_host(self) -> str:
+        return self._remote_addr[0]
+
+    @remote_host.setter
+    def remote_host(self, value: str) -> None:
+        self.remote_addr = (value, self.remote_port)
+
+    @property
+    def remote_port(self) -> int:
+        return self._remote_addr[1]
+
+    @remote_port.setter
+    def remote_port(self, value: int) -> None:
+        self.remote_addr = (self.remote_host, value)
+
+    @property
+    def local_addr(self) -> Tuple[str, int]:
+        return self._local_addr
+
+    @property
+    def local_host(self) -> str:
+        return self._local_addr[0]
+
+    @property
+    def local_port(self) -> int:
+        return self._local_addr[1]
+
+    @property
+    def media_profiles(self) -> Mapping[int, RTPMediaProfiles]:
+        return MappingProxyType(self._media_profiles)
 
     @property
     def recv_stats(self) -> RTPPacketsStats:
@@ -391,18 +437,51 @@ class RTPClient:
 
     @property
     def closed(self):
-        return self._closed
+        """
+        Returns True if the client is closed. (i.e. both send and recv threads are stopped)
+        """
+        return (self._recv_thread is None or not self._recv_thread.is_alive()) and (
+            self._send_thread is None or not self._send_thread.is_alive()
+        )
+
+    def _create_recv_socket(self):
+        recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+        recv_socket.setblocking(False)
+        # if port is 0, try to bind to an even port, near RTP common range
+        # otherwise, just let fail
+        while True:
+            if self._local_addr[1] == 0:
+                self._local_addr = (self._local_addr[0], DEFAULT_RTP_PORT_RANGE[0])
+            try:
+                recv_socket.bind(self._local_addr)
+                break
+            except OSError as e:
+                if (
+                    e.errno == errno.EADDRINUSE
+                    and self._local_addr[1] == 0
+                    and self._local_addr[1] < DEFAULT_RTP_PORT_RANGE[1]
+                ):
+                    self._local_addr = (self._local_addr[0], self._local_addr[1] + 2)
+                else:
+                    raise
+        return recv_socket
+
+    def _create_recv_stream(self) -> RTPStreamBuffer:
+        return RTPStreamBuffer(mode="w")
+
+    def _create_send_stream(self) -> RTPStreamBuffer:
+        return RTPStreamBuffer(mode="r", profile=self._profile)
 
     def start(self):
-        if self._recv_socket is not None:
+        if self._recv_thread is not None and self._recv_thread.is_alive():
             raise RuntimeError("RTP client already started")
 
-        self._recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._recv_socket.setsockopt(
-            socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024
-        )
-        self._recv_socket.setblocking(False)
-        self._recv_socket.bind(self._local_addr)
+        if self._remote_addr is None:
+            raise RuntimeError("Remote address not set")
+
+        if self._recv_socket is None:
+            self._recv_socket = self._create_recv_socket()
 
         self._send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -430,7 +509,6 @@ class RTPClient:
         self._send_socket = None
         self._recv_thread = None
         self._send_thread = None
-        self._closed = True
         self._closing_event.clear()
 
     def __enter__(self):

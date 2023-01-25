@@ -274,7 +274,7 @@ class TestRTPClient:
         if server_address is None:
             server_address = "127.0.0.1", 24546  # TODO: get temp free ports
         if client_address is None:
-            client_address = "127.0.0.1", 14546  # TODO: get temp free ports
+            client_address = "127.0.0.1", 0
 
         test_profiles = {
             0: RTPMediaProfiles.PCMU,
@@ -292,19 +292,22 @@ class TestRTPClient:
             if first_packet.payload_type.payload_type not in test_profiles:
                 return
             client_packets = itertools.chain([first_packet], client_packets)
-        server = MockRTPServer(
-            server_packets, server_address, client_address, send_delay=2e-3
-        )
         client = RTPClient(
             client_address,
             server_address,
             media_formats=test_profiles,
-            send_delay_factor=2e-3,
+            send_delay_factor=3e-3,
+            pre_bind=True,
+        )
+        assert client.local_port > 0, "Client port should have been assigned in pre_bind"
+        client_address = client.local_addr
+        server = MockRTPServer(
+            server_packets, server_address, client_address, send_delay=2e-3
         )
         with client, server:
             for packet in client_packets:
                 client.write(packet.serialize())
-                time.sleep(2e-3)
+                time.sleep(3e-3)
             time.sleep(1e-1)  # wait for the last packets to be sent
             server.send_thread.join()
             time.sleep(1e-1)  # wait for the last packets to be recv'd
