@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC
 from dataclasses import field as dataclass_field
-from typing import Dict, Optional, List, Any, MutableMapping, TYPE_CHECKING
+from typing import Dict, Optional, List, Any, MutableMapping, TYPE_CHECKING, Tuple
 
 try:
     from typing import Self
@@ -58,6 +59,9 @@ __all__ = [
     "SDPSessionAttributeField",
     "SDPSession",
 ]
+
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -393,3 +397,19 @@ class SDPSession(SDPSection):
         if fields.get("media"):
             raise SDPParseError(f"Session field {line} found after media field")
         return super()._line_preprocess(line, fields)
+
+    @property
+    def connection_address(self) -> Optional[Tuple[str, int]]:
+        addresses: List[Tuple[str, int]] = [
+            (connection.address, media.media.port)
+            for media in self.media
+            if (connection := media.connection or self.connection)
+        ]
+        if not addresses:
+            return None
+        if len(addresses) > 1:
+            # TODO: implement allowing to filter by supported media types
+            _logger.warning(
+                "Multiple connection addresses found in SDP session, returning first one"
+            )
+        return addresses[0]

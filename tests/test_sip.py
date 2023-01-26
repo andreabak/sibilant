@@ -14,7 +14,6 @@ from sibilant.sip import (
     SIPRequest,
     SIPResponse,
     SIPMessage,
-    AbstractVoIPPhone,
     SIPClient,
     SIPCall,
     SIPMethod,
@@ -231,12 +230,22 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
             _logger.debug(f"Received {message!r}")
 
 
-class MockVoIPPhone(AbstractVoIPPhone):
+class TestCallHandler:
     """A mock VoIP phone that can send and receive SIP messages."""
 
     @property
     def can_accept_calls(self) -> bool:
         return True
+
+    @property
+    def can_make_calls(self) -> bool:
+        return True
+    
+    def prepare_call(self, call: SIPCall) -> None:
+        pass
+
+    def teardown_call(self, call: SIPCall) -> None:
+        pass
 
     async def answer(self, call: SIPCall) -> bool:
         return True
@@ -246,7 +255,7 @@ class MockVoIPPhone(AbstractVoIPPhone):
             5060: [rtp.RTPMediaProfiles.PCMU, rtp.RTPMediaProfiles.PCMA],
         }
 
-    def get_default_media_flow(self) -> rtp.MediaFlowType:
+    def get_media_flow(self) -> rtp.MediaFlowType:
         return rtp.MediaFlowType.SENDRECV
 
     def establish_call(self, call: SIPCall) -> None:
@@ -318,7 +327,7 @@ class TestSIPClient:
             wait_recv_timeout=wait_recv_timeout,
         )
         client = SIPClient(
-            phone=MockVoIPPhone(),
+            call_handler_factory=lambda call: TestCallHandler(),
             username="alice",
             password="secret",
             server_host=server_address[0],

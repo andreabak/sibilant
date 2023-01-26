@@ -39,12 +39,16 @@ class SIPTimeout(SIPException, TimeoutError):
     """Raised when a SIP transaction times out."""
 
 
-class SIPBadRequest(SIPException):
-    """Raised when a we get a 400 Bad Request response from the server."""
+class SIPBadMessage(SIPException):
+    """Raised when a SIP message is malformed or invalid."""
 
 
-class SIPBadResponse(SIPException):
-    """Raised when a SIP response is not valid."""
+class SIPBadRequest(SIPBadMessage):
+    """Raised when a SIP request is malformed or invalid."""
+
+
+class SIPBadResponse(SIPBadMessage):
+    """Raised when a SIP response is malformed or invalid."""
 
 
 class SIPAuthenticationError(SIPException):
@@ -93,3 +97,19 @@ class RTPUnhandledPayload(RTPException, NotImplementedError):
 
 class RTPUnsupportedCodec(RTPException, NotImplementedError):
     """Exception raised when a codec is not supported by this library."""
+
+
+class VoIPException(SibilantException):
+    """Base class for all exceptions raised by the VoIP module."""
+
+
+class VoIPPhoneException(VoIPException):
+    """Base class for all exceptions raised by the VoIPPhone class."""
+
+
+class VoIPCallException(VoIPException):
+    """Base class for all exceptions raised by the VoIPCall class."""
+
+
+class VoIPCallTimeoutError(VoIPCallException, TimeoutError):
+    """Raised when a VoIP call method times out."""

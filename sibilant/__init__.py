@@ -59,4 +59,7 @@ __license__ = _get_metadata(
 )
 
 
+from .voip import *
+
+
 # TODO: fix __all__ in all modules, or see if there's better options / linters

@@ -343,11 +343,14 @@ class RTPClient:
             payload_type: (
                 media_format
                 if isinstance(media_format, RTPMediaProfiles)
+                and isinstance(media_format.payload_type, int)
                 else RTPMediaProfiles.match(payload_type, media_format)
             )
             for payload_type, media_format in media_formats.items()
         }
-        # TODO: make sure the telephone-event profile has a concrete int payload type now
+        # assert all(
+        #     isinstance(p.payload_type, int) for p in self._media_profiles.values()
+        # )
 
         # FIXME: should we have separate profiles for sending and receiving?
         # try to find a supported format and use that as RTPMediaProfile for the streams
@@ -448,23 +451,24 @@ class RTPClient:
         recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
         recv_socket.setblocking(False)
-        # if port is 0, try to bind to an even port, near RTP common range
-        # otherwise, just let fail
+
+        dynamic_port: bool = self._local_addr[1] == 0
         while True:
-            if self._local_addr[1] == 0:
+            if dynamic_port:
                 self._local_addr = (self._local_addr[0], DEFAULT_RTP_PORT_RANGE[0])
             try:
                 recv_socket.bind(self._local_addr)
                 break
             except OSError as e:
                 if (
-                    e.errno == errno.EADDRINUSE
-                    and self._local_addr[1] == 0
+                    dynamic_port
+                    and e.errno == errno.EADDRINUSE
                     and self._local_addr[1] < DEFAULT_RTP_PORT_RANGE[1]
                 ):
                     self._local_addr = (self._local_addr[0], self._local_addr[1] + 2)
                 else:
                     raise
+
         return recv_socket
 
     def _create_recv_stream(self) -> RTPStreamBuffer:

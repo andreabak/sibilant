@@ -144,6 +144,10 @@ class RTPMediaProfiles(FieldsEnum):
         assert media_profile is not None
         return media_profile
 
+    @property
+    def fmt(self) -> RTPMediaFormat:
+        return self._wrapped_value_
+
     # TODO: add custom _missing_ make it so we match profiles where some fields are None by default, but actual packet specifies something
 
     # audio

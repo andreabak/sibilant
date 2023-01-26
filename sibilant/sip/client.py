@@ -14,6 +14,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import replace as dataclass_replace
 from functools import partial
+from types import MappingProxyType
 from typing import (
     Optional,
     Tuple,
@@ -29,14 +30,13 @@ from typing import (
     Any,
     Coroutine,
     Collection,
+    Protocol,
 )
 
-from ..helpers import SupportsStr
-
 try:
-    from typing import Self
+    from typing import Self, runtime_checkable
 except ImportError:
-    from typing_extensions import Self
+    from typing_extensions import Self, runtime_checkable
 
 import sibilant
 from .. import sdp, rtp
@@ -50,7 +50,9 @@ from ..exceptions import (
     SIPBadRequest,
     SIPException,
     SIPUnsupportedError,
+    SIPBadMessage,
 )
+from ..helpers import SupportsStr
 from ..structures import SIPURI, SIPAddress
 from . import headers as hdr
 from .messages import SIPResponse, SIPRequest, SIPMessage, SIPMethod, SIPStatus
@@ -121,38 +123,49 @@ async def cancel_task_silent(task: asyncio.Task) -> None:
         pass
 
 
-# TODO: move this to a separate module, probably rename
-class AbstractVoIPPhone(ABC):
+@runtime_checkable
+class CallHandler(Protocol):
     @property
-    @abstractmethod
     def can_accept_calls(self) -> bool:
-        """Whether this phone can accept calls."""
+        """Whether we can accept calls."""
 
-    @abstractmethod
+    @property
+    def can_make_calls(self) -> bool:
+        """Whether we can make calls."""
+
+    def prepare_call(self, call: SIPCall) -> None:
+        """
+        The call has been validated, and we're in transaction to start it.
+        The handler should now do any necessary steps to prepare to handle it.
+        Ideally this should return quickly, as it blocks the transaction.
+        """
+
+    def teardown_call(self, call: SIPCall) -> None:
+        """A call is being closed. Clean up any resources used by the call."""
+
     async def answer(self, call: SIPCall) -> bool:
         """
         Answer an incoming call. Returns True if the call was answered.
         If the call was cancelled by the other party, will internally raise a
-        :class:`asyncio.CancelledError`, that the phone should catch to stop ringing.
+        :class:`asyncio.CancelledError`, that the handler should catch to stop ringing.
         """
 
-    @abstractmethod
     def get_rtp_profiles_by_port(self) -> Mapping[int, Sequence[rtp.RTPMediaProfiles]]:
-        """Get the RTP profiles and ports that this phone will use for calls."""
+        """Get the RTP profiles and ports that will be used for calls."""
 
-    @abstractmethod
-    def get_default_media_flow(self) -> rtp.MediaFlowType:
-        """Get the default media flow for this phone."""
+    def get_media_flow(self) -> rtp.MediaFlowType:
+        """Get the default media flow for the calls."""
 
     # TODO: check if we want async here
-    @abstractmethod
     def establish_call(self, call: SIPCall) -> None:
         """A call is established. Start handling streams."""
 
     # TODO: check if we want async here
-    @abstractmethod
     def terminate_call(self, call: SIPCall) -> None:
         """Terminate an established call. Stop handling streams."""
+
+
+CallHandlerFactory = Callable[["SIPCall"], CallHandler]
 
 
 class SIPDialogue(ABC):
@@ -468,6 +481,7 @@ class SIPCall(SIPDialogue):
         from_header: Optional[hdr.FromHeader] = None,
         call_id: Optional[str] = None,
         cseq: Optional[int] = None,
+        call_handler_factory: Optional[CallHandlerFactory] = None,
     ):
         to_address: SIPAddress
         to_tag: Optional[str]
@@ -507,7 +521,15 @@ class SIPCall(SIPDialogue):
         )
 
         self._state: CallState = CallState.INIT
-        self._failure_exc: Optional[Exception] = None
+        self._received_sdp: Optional[sdp.SDPSession] = None
+        self._sent_sdp: Optional[sdp.SDPSession] = None
+        self._failure_exception: Optional[Exception] = None
+        self._cancel_event: asyncio.Event = asyncio.Event()
+
+        if call_handler_factory is None:
+            call_handler_factory = self._client.call_handler_factory
+
+        self._handler: CallHandler = call_handler_factory(self)
 
     @classmethod
     def from_invite(cls, client: SIPClient, invite: SIPRequest) -> Self:
@@ -524,6 +546,26 @@ class SIPCall(SIPDialogue):
     def state(self) -> CallState:
         return self._state
 
+    @property
+    def handler(self) -> CallHandler:
+        return self._handler
+
+    @property
+    def received_sdp(self) -> Optional[sdp.SDPSession]:
+        return self._received_sdp
+
+    @property
+    def sent_sdp(self) -> Optional[sdp.SDPSession]:
+        return self._sent_sdp
+
+    @property
+    def failure_exception(self) -> Optional[Exception]:
+        return self._failure_exception
+
+    def _close(self) -> None:
+        self._handler.teardown_call(self)
+        super()._close()
+
     @contextlib.asynccontextmanager
     async def _handle_errors(self):
         try:
@@ -531,13 +573,20 @@ class SIPCall(SIPDialogue):
         # TODO: better handle other exceptions, like bad request, and send appropriate response
         except Exception as exc:
             self._state = CallState.FAILED
-            self._failure_exc = exc
+            self._failure_exception = exc
             self._close()
             raise
 
     async def invite(self) -> None:
         async with self._handle_errors():
             await self._invite_send_transaction()
+
+    async def bye(self) -> None:
+        async with self._handle_errors():
+            await self._bye_send_transaction()
+
+    def set_cancel(self) -> None:
+        self._cancel_event.set()
 
     async def _handle_message(self, message: SIPMessage) -> None:
         """Handle an incoming SIP message, and start the appropriate flow"""
@@ -552,6 +601,19 @@ class SIPCall(SIPDialogue):
 
         raise SIPBadRequest(f"Unexpected request: {message!r}")
 
+    def _process_received_sdp(self, message: SIPMessage):
+        """Process the SDP from an incoming message, and update the state accordingly."""
+        if message.sdp is None or not isinstance(message.sdp, sdp.SDPSession):
+            raise SIPBadMessage("Missing or invalid SDP in message")
+        # TODO: check if we have at least 1 supported media type
+        self._received_sdp = message.sdp
+
+    def _process_sent_sdp(self, message: SIPMessage):
+        """Process the SDP from an outgoing message, and update the state accordingly."""
+        if message.sdp is None or not isinstance(message.sdp, sdp.SDPSession):
+            raise SIPBadMessage("Missing or invalid SDP in message")
+        self._sent_sdp = message.sdp
+
     async def _invite_recv_transaction(self, invite: SIPRequest) -> None:
         """Handle an incoming INVITE request, wait for client answer and send 200 OK."""
         if not isinstance(invite, SIPRequest) or invite.method != SIPMethod.INVITE:
@@ -564,12 +626,18 @@ class SIPCall(SIPDialogue):
 
         self._state = CallState.INVITE
 
-        # TODO: check if invite contains SDP if we have at least 1 supported media type
+        if invite.sdp is not None:
+            self._process_received_sdp(invite)
 
-        if not self._client.phone.can_accept_calls:
+        if not self._handler.can_accept_calls:
+            # TODO: should handle in some other way, maybe with a method vs property,
+            #       that way we can detect missed calls in the handler/phone
             await self._reply_busy(invite)
             self._close()
             return
+
+        # TODO: good opportunity here to send 100 Trying maybe? Or is that UAS only?
+        self._handler.prepare_call(self)
 
         await self._reply_ringing(invite)
 
@@ -579,8 +647,8 @@ class SIPCall(SIPDialogue):
             name=f"{self.__class__.__name__}._wait_for_message-{self._call_id} task",
         )
         phone_answer = asyncio.create_task(
-            self._client.phone.answer(self),
-            name=f"{self.__class__.__name__}._client.phone.answer-{self._call_id} task",
+            self._handler.answer(self),
+            name=f"{self.__class__.__name__}._call_handler.answer-{self._call_id} task",
         )
         done, pending = await asyncio.wait(
             [incoming_request, phone_answer], return_when=asyncio.FIRST_COMPLETED
@@ -611,17 +679,23 @@ class SIPCall(SIPDialogue):
                 return
 
             rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]]
-            rtp_profiles_by_port = self._client.phone.get_rtp_profiles_by_port()
-            media_flow: rtp.MediaFlowType = self._client.phone.get_default_media_flow()
+            rtp_profiles_by_port = self._handler.get_rtp_profiles_by_port()
+            media_flow: rtp.MediaFlowType = self._handler.get_media_flow()
 
             await self._reply_answer(invite, rtp_profiles_by_port, media_flow)
+
             try:
                 request: SIPMessage = await self._wait_for_message()
                 if isinstance(request, SIPRequest) and request.method == SIPMethod.ACK:
                     self._follow_cseq(request)
+                    if request.sdp is not None:
+                        self._process_received_sdp(request)
+                    if self._received_sdp is None:
+                        raise SIPBadRequest("Never received SDP in INVITE transaction")
+                    self._handler.establish_call(self)
                     self._state = CallState.ESTABLISHED
-                    self._client.phone.establish_call(self)
                     return
+
             except asyncio.TimeoutError as e:
                 raise SIPTimeout("ACK never received after 200 OK") from e
 
@@ -636,33 +710,63 @@ class SIPCall(SIPDialogue):
         if self._state != CallState.INIT:
             raise SIPException("Cannot start INVITE flow in current state")
 
-        # TODO: sanity check phone can make calls?
+        if not self._handler.can_make_calls:
+            raise SIPException(f"Call handler cannot make calls: {self._handler!r}")
+
+        self._handler.prepare_call(self)
 
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]]
-        rtp_profiles_by_port = self._client.phone.get_rtp_profiles_by_port()
-        media_flow: rtp.MediaFlowType = self._client.phone.get_default_media_flow()
+        rtp_profiles_by_port = self._handler.get_rtp_profiles_by_port()
+        media_flow: rtp.MediaFlowType = self._handler.get_media_flow()
 
         invite: SIPRequest = await self._send_invite(rtp_profiles_by_port, media_flow)
 
-        # TODO: have a way for client to terminate call attempt while we're waiting (catch raise? idk)
-        response: SIPMessage
-        while (
-            isinstance((response := await self._wait_for_message()), SIPResponse)
-            and response.status == SIPStatus.RINGING
-        ):
-            self._state = CallState.RINGING
+        async def wait_while_ringing():
+            while (
+                isinstance((response := await self._wait_for_message()), SIPResponse)
+                and response.status == SIPStatus.RINGING
+            ):
+                self._state = CallState.RINGING
+            return response
 
-        if isinstance(response, SIPResponse) and response.status == SIPStatus.OK:
-            self._state = CallState.ANSWERING
+        incoming_response = asyncio.create_task(
+            wait_while_ringing(),
+            name=f"{self.__class__.__name__}._invite_send_transaction"
+            f".wait_while_ringing-{self._call_id} task",
+        )
+        self._cancel_event.clear()
+        cancel_event = asyncio.create_task(
+            self._cancel_event.wait(),
+            name=f"{self.__class__.__name__}._cancel_event.wait-{self._call_id} task",
+        )
+        done, pending = await asyncio.wait(
+            [incoming_response, cancel_event], return_when=asyncio.FIRST_COMPLETED
+        )
 
-            await self._send_ack(invite)
-
-            self._client.phone.establish_call(self)
+        if cancel_event in done:
+            await cancel_task_silent(incoming_response)
+            await self._send_cancel(invite)
+            self._close()
             return
 
-        # TODO: handle other failure modes
+        elif incoming_response in done:
+            await cancel_task_silent(incoming_response)
 
-        raise SIPBadResponse(f"Unexpected response to INVITE: {response!r}")
+            response: SIPMessage = incoming_response.result()
+
+            if isinstance(response, SIPResponse) and response.status == SIPStatus.OK:
+                self._state = CallState.ANSWERING
+
+                await self._send_ack(invite)
+
+                self._handler.establish_call(self)
+                return
+
+            # TODO: handle other failure modes
+
+            raise SIPBadResponse(f"Unexpected response to INVITE: {response!r}")
+
+        raise RuntimeError("INVITE never answered by phone, nor CANCELLED by caller")
 
     async def _bye_recv_transaction(self, bye: SIPRequest) -> None:
         """Handle an incoming BYE request, and send 200 OK."""
@@ -677,7 +781,7 @@ class SIPCall(SIPDialogue):
         self._follow_cseq(bye)
 
         self._state = CallState.HANGING_UP
-        self._client.phone.terminate_call(self)
+        self._handler.terminate_call(self)
 
         await self._reply_ok(bye)
 
@@ -692,7 +796,7 @@ class SIPCall(SIPDialogue):
         await self._send_bye()
 
         self._state = CallState.HANGING_UP
-        self._client.phone.terminate_call(self)
+        self._handler.terminate_call(self)
 
         try:
             response: SIPMessage = await self._wait_for_message()
@@ -735,6 +839,15 @@ class SIPCall(SIPDialogue):
             raise RuntimeError("INVITE request has no CSeq header")
         return self._generate_request(
             SIPMethod.ACK, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+        )
+
+    def _cancel_request(self, invite: SIPRequest) -> SIPRequest:
+        """Create a CANCEL request."""
+        invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
+        if invite_cseq is None:
+            raise RuntimeError("INVITE request has no CSeq header")
+        return self._generate_request(
+            SIPMethod.CANCEL, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
         )
 
     def _ringing_response(self, request: SIPRequest) -> SIPResponse:
@@ -784,6 +897,8 @@ class SIPCall(SIPDialogue):
             rtp_profiles_by_port, media_flow
         )
         await self._send_message(invite_request)
+        assert invite_request.sdp is not None
+        self._process_sent_sdp(invite_request)
         self._state = CallState.INVITE
         return invite_request
 
@@ -795,6 +910,15 @@ class SIPCall(SIPDialogue):
         await self._send_message(ack_request)
         self._state = CallState.ESTABLISHED
         return ack_request
+
+    async def _send_cancel(self, invite: SIPRequest) -> SIPRequest:
+        if self._state not in (CallState.INVITE, CallState.RINGING):
+            raise RuntimeError(f"Cannot send CANCEL in state {self._state}")
+
+        cancel_request: SIPRequest = self._cancel_request(invite)
+        await self._send_message(cancel_request)
+        self._state = CallState.CANCELLED
+        return cancel_request
 
     async def _send_bye(self) -> SIPRequest:
         if self._state not in (CallState.ESTABLISHED, CallState.INVITE):
@@ -866,7 +990,7 @@ class SIPClient:
 
     def __init__(
         self,
-        phone: AbstractVoIPPhone,
+        call_handler_factory: CallHandlerFactory,
         username: str,
         password: str,
         server_host: str,
@@ -882,7 +1006,7 @@ class SIPClient:
         default_response_timeout: float = 32.0,
         max_forwards: int = 70,
     ):
-        self._phone: AbstractVoIPPhone = phone
+        self.call_handler_factory: CallHandlerFactory = call_handler_factory
 
         self._username: str = username
         self._login: str = (login is not None and login) or username
@@ -926,10 +1050,6 @@ class SIPClient:
         self._closed: bool = True
         self._closing_event: threading.Event = threading.Event()
         self._closing_event.clear()
-
-    @property
-    def phone(self) -> AbstractVoIPPhone:
-        return self._phone
 
     @property
     def server_addr(self) -> Tuple[str, int]:
@@ -1011,11 +1131,13 @@ class SIPClient:
 
     @property
     def calls(self) -> Mapping[str, SIPDialogue]:
-        return {
-            call_id: dialogue
-            for call_id, dialogue in self._dialogues.items()
-            if isinstance(dialogue, SIPCall)
-        }
+        return MappingProxyType(
+            {
+                call_id: dialogue
+                for call_id, dialogue in self._dialogues.items()
+                if isinstance(dialogue, SIPCall)
+            }
+        )
 
     def track_dialogue(self, dialogue: SIPDialogue):
         assert dialogue.call_id not in self._dialogues
@@ -1091,6 +1213,10 @@ class SIPClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
+    @property
+    def event_loop(self) -> asyncio.AbstractEventLoop:
+        return self._event_loop
+
     # FIXME: we want errors raised in the event loop thread to stop the main loop
     def _run_event_loop(self):
         asyncio.set_event_loop(self._event_loop)
@@ -1156,7 +1282,7 @@ class SIPClient:
         else:
             _logger.error(message)
 
-    def _schedule(self, coro) -> asyncio.Future:
+    def schedule(self, coro) -> asyncio.Future:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._pending_futures.append(future)
         return future
@@ -1194,7 +1320,7 @@ class SIPClient:
                 _logger.debug(f"Error parsing SIP message: {e}")
 
             else:
-                self._schedule(self._handle_message(message))
+                self.schedule(self._handle_message(message))
 
             time.sleep(1e-6)
 
@@ -1230,7 +1356,7 @@ class SIPClient:
 
         self._register_dialogue: Optional[SIPRegistration] = SIPRegistration(self)
 
-        self._schedule(self._register_dialogue.register()).result()  # wait
+        self.schedule(self._register_dialogue.register()).result()  # wait
         _logger.debug(f"Registered with {self.server_host} with user {self._username}")
 
     def _deregister(self):
@@ -1242,12 +1368,16 @@ class SIPClient:
             self._register_dialogue = None
 
         try:
-            self._schedule(_deregister()).result()
+            self.schedule(_deregister()).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
 
     # TODO: should this be async? or should it be blocking?
-    def invite(self, contact: Union[SIPAddress, SIPURI, str]) -> SIPCall:
+    def invite(
+        self,
+        contact: Union[SIPAddress, SIPURI, str],
+        call_handler_factory: Optional[CallHandlerFactory] = None,
+    ) -> SIPCall:
         if isinstance(contact, str):
             if "@" not in contact:
                 contact = SIPURI(
@@ -1255,13 +1385,16 @@ class SIPClient:
                 )
             else:
                 contact = SIPAddress.parse(contact)
-        elif isinstance(contact, SIPURI):
+        if isinstance(contact, SIPURI):
             contact = SIPAddress(uri=contact)
-        elif not isinstance(contact, SIPAddress):
+        if not isinstance(contact, SIPAddress):
             raise TypeError(f"Invalid type for contact {type(contact)}: {contact!r}")
 
-        call = SIPCall(self, to=contact)
-        self._schedule(call.invite())
+        if call_handler_factory is None:
+            call_handler_factory = self.call_handler_factory
+
+        call = SIPCall(self, to=contact, call_handler_factory=call_handler_factory)
+        self.schedule(call.invite())
         return call
 
     # TODO: start invite
@@ -1321,6 +1454,7 @@ class SIPClient:
             hdr.MaxForwardsHeader(self._max_forwards),
             hdr.UserAgentHeader(f"{sibilant.__title__}/{sibilant.__version__}"),
             *extra_headers,
+            *([hdr.ContentTypeHeader(content_type)] if content_type else ()),
             hdr.ContentLengthHeader((body and len(str(body).encode())) or 0),
         )
 
