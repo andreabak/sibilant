@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
 import enum
 import hashlib
@@ -237,7 +238,24 @@ class SIPDialogue(ABC):
         self._client.untrack_dialogue(self)
         self._closed = True
 
+    async def terminate(self) -> None:
+        """Terminate this dialogue."""
+        self._close()
+
     async def receive_message(self, message: SIPMessage) -> None:
+        if (
+            self._to_tag is None
+            and "To" in message.headers
+            and (to_tag := message.headers["To"].tag) is not None
+        ):
+            self._to_tag = to_tag
+        if (
+            self._from_tag is None
+            and "From" in message.headers
+            and (from_tag := message.headers["From"].tag) is not None
+        ):
+            self._from_tag = from_tag
+
         if self._expecting_msg:
             # Put the message in the queue, and whatever is awaiting will get it
             if not self._recv_queue.empty():
@@ -285,11 +303,11 @@ class SIPDialogue(ABC):
         finally:
             self._expecting_msg = False
 
-    def _follow_cseq(self, request: SIPRequest) -> SIPRequest:
+    def _follow_cseq(self, request: SIPMessage) -> SIPMessage:
         """Set the internal CSeq to the one in the request and increment it."""
         cseq: hdr.CSeqHeader = request.headers.get("CSeq")
         if cseq is None:
-            raise SIPBadRequest("Missing CSeq header")
+            raise SIPBadMessage("Missing CSeq header")
         self._cseq = cseq.sequence + 1
         return request
 
@@ -328,6 +346,58 @@ class SIPDialogue(ABC):
     ) -> SIPResponse:
         return self._client.generate_response_from_request(request, status, **kwargs)
 
+    async def _might_authenticate(
+        self,
+        sender_factory: Callable[
+            [Optional[hdr.AuthorizationHeader]], Coroutine[SIPRequest]
+        ],
+        max_attempts: int = 5,
+    ) -> Tuple[SIPRequest, SIPResponse]:
+        """
+        Handle sending a request with an optional authentication challenge.
+
+        :param sender_factory: the coroutine that generates and sends the request,
+            must accept an (optional) authorization header to add to the request,
+            and return the sent request.
+        :return: the last sent request and the last received response.
+        """
+        authorization: Optional[hdr.AuthorizationHeader] = None
+        response: Optional[SIPMessage] = None
+        attempts: int = max_attempts
+        while attempts > 0:
+            request: SIPRequest = await sender_factory(authorization)
+            method: str = request.method.name
+            try:
+                response = await self._wait_for_message(self._client.register_timeout)
+            except asyncio.TimeoutError:
+                raise SIPTimeout(f"Timed out waiting for {method} response")
+
+            if not isinstance(response, SIPResponse):
+                raise SIPBadResponse(f"Unexpected response for {method}: {response!r}")
+
+            if response.status == SIPStatus.UNAUTHORIZED:
+                nonce_changed = "nonce" in response.status.reason
+                if authorization is not None and not nonce_changed:
+                    raise SIPAuthenticationError(
+                        "Failed to authenticate with given credentials"
+                    )
+
+                authorization = self._client.generate_auth(response)
+
+            elif response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED:
+                raise SIPUnsupportedError("Proxy authentication not implemented")
+
+            else:
+                return request, response
+
+            attempts -= 1
+
+        raise SIPException(
+            "Failed to authenticate with server "
+            f"(after {max_attempts - attempts} attempts)"
+            + (f"\nLast response: {response!r}" if response is not None else "")
+        )
+
 
 class SIPRegistration(SIPDialogue):
     def __init__(self, client: SIPClient):
@@ -365,53 +435,28 @@ class SIPRegistration(SIPDialogue):
         return self._generate_request(SIPMethod.REGISTER, extra_headers=extra_headers)
 
     async def _register_transaction(self, deregister: bool = False) -> None:
-        authorization: Optional[hdr.AuthorizationHeader] = None
-
-        response: Optional[SIPMessage] = None
-        attempts: int = self._client.register_attempts
-        while attempts > 0:
-            request: SIPRequest = self._register_request(authorization, deregister)
+        async def sender(
+            authorization: Optional[hdr.AuthorizationHeader],
+        ) -> SIPRequest:
+            request: SIPRequest = self._register_request(
+                authorization, deregister=deregister
+            )
             await self._send_request(request)
-            try:
-                response = await self._wait_for_message(self._client.register_timeout)
-            except asyncio.TimeoutError:
-                raise SIPTimeout("Timed out waiting for REGISTER response")
+            return request
 
-            if not isinstance(response, SIPResponse):
-                raise SIPBadResponse("Unexpected response for REGISTER: {response!r}")
+        response: SIPResponse
+        _, response = await self._might_authenticate(sender)
 
-            if response.status == SIPStatus.UNAUTHORIZED:
-                nonce_changed = "nonce" in response.status.reason
-                if authorization is not None and not nonce_changed:
-                    raise SIPAuthenticationError(
-                        "Failed to authenticate with given credentials"
-                    )
+        if response.status == SIPStatus.BAD_REQUEST:
+            raise SIPBadRequest("REGISTER failed: server replied with 400 Bad Request")
 
-                authorization = self._client.generate_auth(response)
+        elif 400 <= int(response.status) <= 499 or 600 <= int(response.status) <= 699:
+            raise SIPException(f"REGISTER failed: {response!r}")
 
-            elif response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED:
-                raise SIPUnsupportedError("Proxy authentication not implemented")
+        elif response.status == SIPStatus.OK:
+            return  # all good, exit flow
 
-            elif response.status == SIPStatus.BAD_REQUEST:
-                raise SIPBadRequest(
-                    "REGISTER failed: server replied with 400 Bad Request"
-                )
-
-            elif (
-                400 <= int(response.status) <= 499 or 600 <= int(response.status) <= 699
-            ):
-                raise SIPException(f"REGISTER failed: {response!r}")
-
-            elif response.status == SIPStatus.OK:
-                return  # all good, exit flow
-
-            attempts -= 1
-
-        raise SIPException(
-            f"Failed to REGISTER with server "
-            f"(after {self._client.register_attempts - attempts} attempts)"
-            + (f"\nLast response: {response!r}" if response is not None else "")
-        )
+        raise SIPException(f"Unexpected response for REGISTER: {response!r}")
 
     async def _schedule_keep_alive(self):
         await self._cancel_keep_alive()
@@ -446,6 +491,9 @@ class SIPRegistration(SIPDialogue):
         finally:
             self._registered = False
             self._close()
+
+    async def terminate(self) -> None:
+        await self.deregister()
 
 
 # TODO: we might not need all of these states, because some are intermediate and
@@ -581,12 +629,24 @@ class SIPCall(SIPDialogue):
         async with self._handle_errors():
             await self._invite_send_transaction()
 
+    def set_cancel(self) -> None:
+        self._cancel_event.set()
+
     async def bye(self) -> None:
         async with self._handle_errors():
             await self._bye_send_transaction()
 
-    def set_cancel(self) -> None:
-        self._cancel_event.set()
+    async def terminate(self) -> None:
+        if self._closed:
+            return
+
+        if self._state not in (
+            CallState.INIT,
+            CallState.HUNG_UP,
+            CallState.CANCELLED,
+            CallState.FAILED,
+        ):
+            await self.bye()
 
     async def _handle_message(self, message: SIPMessage) -> None:
         """Handle an incoming SIP message, and start the appropriate flow"""
@@ -600,6 +660,14 @@ class SIPCall(SIPDialogue):
         # We shouldn't need to handle any response here, as they're caught by transactions
 
         raise SIPBadRequest(f"Unexpected request: {message!r}")
+
+    def _process_received_message(
+        self, message: SIPMessage, follow_cseq: bool = True, process_sdp: bool = True
+    ) -> None:
+        if follow_cseq:
+            self._follow_cseq(message)
+        if process_sdp and message.sdp is not None:
+            self._process_received_sdp(message)
 
     def _process_received_sdp(self, message: SIPMessage):
         """Process the SDP from an incoming message, and update the state accordingly."""
@@ -622,12 +690,9 @@ class SIPCall(SIPDialogue):
         if self._state != CallState.INIT:
             raise SIPException("Cannot handle incoming INVITE in current state")
 
-        self._follow_cseq(invite)
+        self._process_received_message(invite)
 
         self._state = CallState.INVITE
-
-        if invite.sdp is not None:
-            self._process_received_sdp(invite)
 
         if not self._handler.can_accept_calls:
             # TODO: should handle in some other way, maybe with a method vs property,
@@ -661,7 +726,7 @@ class SIPCall(SIPDialogue):
                 SIPMethod.CANCEL,
                 SIPMethod.BYE,
             ):
-                self._follow_cseq(request)
+                self._process_received_message(request, process_sdp=False)
                 await self._reply_terminated(request)
                 self._close()
                 return
@@ -687,9 +752,7 @@ class SIPCall(SIPDialogue):
             try:
                 request: SIPMessage = await self._wait_for_message()
                 if isinstance(request, SIPRequest) and request.method == SIPMethod.ACK:
-                    self._follow_cseq(request)
-                    if request.sdp is not None:
-                        self._process_received_sdp(request)
+                    self._process_received_message(request)
                     if self._received_sdp is None:
                         raise SIPBadRequest("Never received SDP in INVITE transaction")
                     self._handler.establish_call(self)
@@ -719,7 +782,25 @@ class SIPCall(SIPDialogue):
         rtp_profiles_by_port = self._handler.get_rtp_profiles_by_port()
         media_flow: rtp.MediaFlowType = self._handler.get_media_flow()
 
-        invite: SIPRequest = await self._send_invite(rtp_profiles_by_port, media_flow)
+        invite: Optional[SIPRequest] = None
+
+        async def sender(
+            authorization: Optional[hdr.AuthorizationHeader] = None,
+        ) -> SIPRequest:
+            nonlocal invite
+            if invite is not None:  # clear previous transaction, reset
+                await self._send_ack(invite)
+                self._from_tag = generate_tag()
+                self._to_tag = None
+
+            invite = await self._send_invite(
+                rtp_profiles_by_port, media_flow, authorization=authorization
+            )
+            return invite
+
+        invite, response = await self._might_authenticate(sender)
+        self._state = CallState.INVITE
+        self._recv_queue.put_nowait(response)
 
         async def wait_while_ringing():
             while (
@@ -757,9 +838,13 @@ class SIPCall(SIPDialogue):
             if isinstance(response, SIPResponse) and response.status == SIPStatus.OK:
                 self._state = CallState.ANSWERING
 
+                if response.sdp is not None:
+                    self._process_received_sdp(response)
+
                 await self._send_ack(invite)
 
                 self._handler.establish_call(self)
+                self._state = CallState.ESTABLISHED
                 return
 
             # TODO: handle other failure modes
@@ -790,22 +875,29 @@ class SIPCall(SIPDialogue):
 
     async def _bye_send_transaction(self) -> None:
         """Start an outgoing BYE request, wait for 200 OK (or silent timeout)."""
-        if self._state != CallState.ESTABLISHED:
+        if self._state in (
+            CallState.INIT,
+            CallState.HUNG_UP,
+            CallState.CANCELLED,
+            CallState.FAILED,
+        ):
             raise SIPException("Cannot start BYE flow in current state")
 
-        await self._send_bye()
-
-        self._state = CallState.HANGING_UP
-        self._handler.terminate_call(self)
-
         try:
+            await self._send_bye()
+
+            self._state = CallState.HANGING_UP
+            self._handler.terminate_call(self)
+
             response: SIPMessage = await self._wait_for_message()
             if isinstance(response, SIPResponse) and response.status == SIPStatus.OK:
                 pass  # ok
             else:
                 raise SIPBadResponse(f"Unexpected response to BYE: {response!r}")
+
         except asyncio.TimeoutError:
             pass
+
         finally:
             self._state = CallState.HUNG_UP
             self._close()
@@ -825,10 +917,12 @@ class SIPCall(SIPDialogue):
         self,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
+        authorization: Optional[hdr.AuthorizationHeader] = None,
     ) -> SIPRequest:
         """Create an INVITE request."""
         return self._generate_request(
             SIPMethod.INVITE,
+            extra_headers=[authorization] if authorization else [],
             body=self._generate_sdp_session(rtp_profiles_by_port, media_flow),
         )
 
@@ -889,26 +983,22 @@ class SIPCall(SIPDialogue):
         self,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
+        authorization: Optional[hdr.AuthorizationHeader] = None,
     ) -> SIPRequest:
         if self._state != CallState.INIT:
             raise RuntimeError(f"Cannot send INVITE in state {self._state}")
 
         invite_request: SIPRequest = self._invite_request(
-            rtp_profiles_by_port, media_flow
+            rtp_profiles_by_port, media_flow, authorization=authorization
         )
-        await self._send_message(invite_request)
         assert invite_request.sdp is not None
+        await self._send_request(invite_request)
         self._process_sent_sdp(invite_request)
-        self._state = CallState.INVITE
         return invite_request
 
     async def _send_ack(self, invite: SIPRequest) -> SIPRequest:
-        if self._state != CallState.ANSWERING:
-            raise RuntimeError(f"Cannot send ACK in state {self._state}")
-
         ack_request: SIPRequest = self._ack_request(invite)
         await self._send_message(ack_request)
-        self._state = CallState.ESTABLISHED
         return ack_request
 
     async def _send_cancel(self, invite: SIPRequest) -> SIPRequest:
@@ -1139,6 +1229,16 @@ class SIPClient:
             }
         )
 
+    @property
+    def _dialogues_except_register(self) -> Mapping[str, SIPDialogue]:
+        return MappingProxyType(
+            {
+                call_id: dialogue
+                for call_id, dialogue in self._dialogues.items()
+                if not isinstance(dialogue, SIPRegistration)
+            }
+        )
+
     def track_dialogue(self, dialogue: SIPDialogue):
         assert dialogue.call_id not in self._dialogues
         assert dialogue.client is self
@@ -1186,12 +1286,14 @@ class SIPClient:
             raise
 
     def stop(self):
+        if self._dialogues_except_register:
+            self.schedule(self._close_active_dialogues()).result()
+
         if self.registered:
             self._deregister()
 
         self._closing_event.set()
 
-        # TODO: graceful shutdown of active dialogs (send bye etc)
         if threading.current_thread() is not self._event_loop_thread:
             if self._event_loop_thread.is_alive():
                 self._event_loop_thread.join()
@@ -1282,7 +1384,7 @@ class SIPClient:
         else:
             _logger.error(message)
 
-    def schedule(self, coro) -> asyncio.Future:
+    def schedule(self, coro: Awaitable) -> concurrent.futures.Future:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._pending_futures.append(future)
         return future
@@ -1371,6 +1473,16 @@ class SIPClient:
             self.schedule(_deregister()).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
+
+    async def _close_active_dialogues(self):
+        """schedule close all dialogs with their async close using gather"""
+        await asyncio.gather(
+            *(
+                dialogue.terminate()
+                for dialogue in self._dialogues_except_register.values()
+            ),
+            return_exceptions=True,
+        )
 
     # TODO: should this be async? or should it be blocking?
     def invite(
@@ -1658,6 +1770,7 @@ class SIPClient:
                 self.local_host,
             ),
             name=sdp.SDPSessionName(f"{sibilant.__title__} {sibilant.__version__}"),
+            connection=sdp.SDPSessionConnection("IN", "IP4", self.local_host),
             time=[sdp.SDPTime(sdp.SDPTimeTime(0, 0))],
             media=medias,
         )
