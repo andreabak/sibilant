@@ -393,6 +393,11 @@ class AllowHeader(ListHeader):
 
 
 @dataclass(slots=True)
+class AcceptHeader(ListHeader):
+    _name = "Accept"
+
+
+@dataclass(slots=True)
 class SupportedHeader(ListHeader):
     _name = "Supported"
 

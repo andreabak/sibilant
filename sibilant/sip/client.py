@@ -177,6 +177,7 @@ class SIPDialog(ABC):
     def __init__(
         self,
         client: SIPClient,
+        *,
         uri: SIPURI,
         to_address: SIPAddress,
         from_address: SIPAddress,
@@ -208,6 +209,26 @@ class SIPDialog(ABC):
         self._closed: bool = False
 
         self._client.track_dialog(self)
+
+    @classmethod
+    def from_request(cls, client: SIPClient, request: SIPRequest) -> Self:
+        """Create a new SIPCall instance from an incoming INVITE request."""
+        to_header: hdr.ToHeader = request.headers.get("To")
+        if to_header is None:
+            raise SIPBadRequest(f"Missing To header: {request!r}")
+        from_header: hdr.FromHeader = request.headers.get("From")
+        if from_header is None:
+            raise SIPBadRequest(f"Missing From header: {request!r}")
+        return cls(
+            uri=request.uri,
+            client=client,
+            to_address=to_header.address,
+            from_address=from_header.address,
+            to_tag=to_header.tag,
+            from_tag=from_header.tag,
+            call_id=request.headers["Call-ID"].value,
+            cseq=request.headers["CSeq"].sequence,
+        )
 
     @property
     def client(self) -> SIPClient:
@@ -403,7 +424,7 @@ class SIPRegistration(SIPDialog):
     def __init__(self, client: SIPClient):
         super().__init__(
             client,
-            client.server_uri,
+            uri=client.server_uri,
             from_address=client.contact_address,
             to_address=client.contact_address,
             from_tag=generate_tag(),
@@ -426,10 +447,11 @@ class SIPRegistration(SIPDialog):
     ) -> SIPRequest:
         extra_headers = [
             hdr.ExpiresHeader(0 if deregister else self._client.register_expires),
+            *self._client.generate_capabilities_headers(),
         ]
         if authorization is not None:
             extra_headers.append(authorization)
-        # TODO: Allow
+
         # TODO: allow-events ??
 
         return self._generate_request(SIPMethod.REGISTER, extra_headers=extra_headers)
@@ -496,6 +518,33 @@ class SIPRegistration(SIPDialog):
         await self.deregister()
 
 
+class SIPOptions(SIPDialog):
+    """SIP OPTIONS dialog, mainly for replying to OPTIONS requests."""
+
+    async def _handle_message(self, message: SIPMessage) -> None:
+        if isinstance(message, SIPRequest) and message.method == SIPMethod.OPTIONS:
+            return await self._options_recv_transaction(message)
+
+        raise SIPException("Received unexpected message in OPTIONS transaction")
+
+    def _generate_capabilities_response(self, request: SIPRequest) -> SIPResponse:
+        return self._generate_response_from_request(
+            request,
+            SIPStatus.OK,
+            extra_headers=self.client.generate_capabilities_headers(),
+        )
+
+    async def _options_recv_transaction(self, request: SIPRequest) -> None:
+        """Check OPTIONS request and reply with appropriate response (own capabilities)."""
+        if not isinstance(request, SIPRequest) or request.method != SIPMethod.OPTIONS:
+            raise TypeError(f"Invalid type for OPTIONS request: {request!r}")
+
+        response: SIPResponse = self._generate_capabilities_response(request)
+        await self._send_message(response)
+
+        self._close()
+
+
 # TODO: we might not need all of these states, because some are intermediate and
 #       can be handled by the async flows. Maybe stick to what RFC 3261 section 17 says?
 class CallState(enum.Enum):
@@ -525,41 +574,56 @@ class SIPCall(SIPDialog):
     def __init__(
         self,
         client: SIPClient,
-        to: Union[hdr.ToHeader, SIPAddress],
-        from_header: Optional[hdr.FromHeader] = None,
+        *,
+        uri: Optional[SIPURI] = None,
+        to: Optional[Union[hdr.ToHeader, SIPAddress]] = None,
+        from_hdr: Optional[hdr.FromHeader] = None,
+        to_address: Optional[SIPAddress] = None,
+        from_address: Optional[SIPAddress] = None,
+        to_tag: Optional[str] = None,
+        from_tag: Optional[str] = None,
         call_id: Optional[str] = None,
         cseq: Optional[int] = None,
         call_handler_factory: Optional[CallHandlerFactory] = None,
     ):
-        to_address: SIPAddress
-        to_tag: Optional[str]
-        if isinstance(to, hdr.ToHeader):
-            to_address, to_tag = to.address, to.tag
-        elif isinstance(to, SIPAddress):
-            to_address, to_tag = to, None
-        else:
-            raise TypeError(f"Invalid type for 'to': {to!r}")
+        if (to is None) == (to_address is None):
+            raise ValueError("Exactly one of `to` or `to_address` must be given")
+        if from_hdr is not None and from_address is not None:
+            raise ValueError("Only one of `from_hdr` or `from_address` must be given")
 
-        from_address: SIPAddress
-        from_tag: Optional[str]
-        if from_header is None:
-            from_address, from_tag = client.contact_address, None
-        elif isinstance(from_header, hdr.FromHeader):
-            from_address, from_tag = from_header.address, from_header.tag
-        else:
-            raise TypeError(f"Invalid type for 'from_header': {from_header!r}")
+        if to is not None:
+            if isinstance(to, hdr.ToHeader):
+                to_address, to_tag = to.address, (to.tag or to_tag)
+            elif isinstance(to, SIPAddress):
+                to_address = to
+            else:
+                raise TypeError(f"Invalid type for 'to': {to!r}")
+        assert to_address is not None
+
+        if from_hdr is not None:
+            if isinstance(from_hdr, hdr.FromHeader):
+                from_address, from_tag = from_hdr.address, (from_hdr.tag or from_tag)
+            else:
+                raise TypeError(f"Invalid type for 'from_header': {from_hdr!r}")
+        elif from_address is None:
+            from_address = client.contact_address
+        assert from_address is not None
+
         if from_tag is None:
             from_tag = generate_tag()
+        assert from_tag is not None
 
         # FIXME: better determine if we are the caller or callee / From or To, and generate the tag accordingly
 
-        uri: SIPURI = dataclass_replace(
-            to_address.uri, password=None, params={}, headers={}
-        )
+        if uri is None:
+            uri = dataclass_replace(
+                to_address.uri, password=None, params={}, headers={}
+            )
+        assert uri is not None
 
         super().__init__(
             client,
-            uri,
+            uri=uri,
             to_address=to_address,
             to_tag=to_tag,
             from_address=from_address,
@@ -578,17 +642,6 @@ class SIPCall(SIPDialog):
             call_handler_factory = self._client.call_handler_factory
 
         self._handler: CallHandler = call_handler_factory(self)
-
-    @classmethod
-    def from_invite(cls, client: SIPClient, invite: SIPRequest) -> Self:
-        """Create a new SIPCall instance from an incoming INVITE request."""
-        return cls(
-            client=client,
-            to=invite.headers["To"],
-            from_header=invite.headers["From"],
-            call_id=invite.headers["Call-ID"].value,
-            cseq=invite.headers["CSeq"].sequence,
-        )
 
     @property
     def state(self) -> CallState:
@@ -1069,11 +1122,6 @@ class SIPCall(SIPDialog):
         await self._send_message(terminated_response)
         return terminated_response
 
-    # TODO: invite method to start a call, start transaction
-    # TODO: bye method to end a call, start transaction
-
-    # TODO: make sure `to` has a tag after we get 200 OK / INVITE
-
 
 class SIPClient:
     """Implements a SIP client that communicates over UDP."""
@@ -1206,6 +1254,14 @@ class SIPClient:
     @property
     def registered(self) -> bool:
         return bool(self._register_dialog and self._register_dialog.registered)
+
+    @property
+    def allowed_methods(self) -> Sequence[str]:  # TODO: make dynamic?
+        return "INVITE", "ACK", "CANCEL", "BYE", "OPTIONS"
+
+    @property
+    def supported_content_types(self) -> Sequence[str]:
+        return ("application/sdp",)
 
     @property
     def closed(self) -> bool:
@@ -1432,8 +1488,12 @@ class SIPClient:
 
         if call_id in self._dialogs:
             await self._dialogs[call_id].receive_message(message)
-        elif isinstance(message, SIPRequest) and message.method == SIPMethod.INVITE:
-            await self._handle_invite(message)
+        # TODO: make this dynamic? make a registry of "handlers" from the dialog classes?
+        elif isinstance(message, SIPRequest):
+            if message.method == SIPMethod.INVITE:
+                await self._handle_invite(message)
+            elif message.method == SIPMethod.OPTIONS:
+                await self._handle_options(message)
         else:
             _logger.warning(
                 f"Discarding SIP message for untracked call ID: {message!r}"
@@ -1509,8 +1569,13 @@ class SIPClient:
 
         # TODO: sanity check the message has From etc.
         _logger.debug(f"Received INVITE {message.headers['From']}: {message!r}")
-        call = SIPCall.from_invite(self, message)
+        call = SIPCall.from_request(self, message)
         await call.receive_message(message)
+
+    async def _handle_options(self, message: SIPRequest):
+        _logger.debug(f"Received OPTIONS {message.headers['From']}: {message!r}")
+        dialog = SIPOptions.from_request(self, message)
+        await dialog.receive_message(message)
 
     def prepare_headers(
         self,
@@ -1696,6 +1761,14 @@ class SIPClient:
             response=response,
             algorithm="MD5",
         )
+
+    def generate_capabilities_headers(self) -> List[hdr.Header]:
+        return [
+            hdr.AllowHeader(list(self.allowed_methods)),
+            hdr.AcceptHeader(list(self.supported_content_types)),
+            # hdr.SupportedHeader([]),  # TODO: supported extensions
+            # TODO: allow-events?
+        ]
 
     def generate_sdp_session(
         self,
