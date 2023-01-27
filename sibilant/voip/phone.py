@@ -125,6 +125,7 @@ class VoIPCall:
         """
         start_time = time.monotonic()
         while self.state in (
+            sip.CallState.INIT,
             sip.CallState.INVITE,
             sip.CallState.RINGING,
             sip.CallState.ANSWERING,

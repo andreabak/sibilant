@@ -53,7 +53,7 @@ from ..exceptions import (
     SIPUnsupportedError,
     SIPBadMessage,
 )
-from ..helpers import SupportsStr
+from ..helpers import SupportsStr, get_external_ip_for_dest
 from ..structures import SIPURI, SIPAddress
 from . import headers as hdr
 from .messages import SIPResponse, SIPRequest, SIPMessage, SIPMethod, SIPStatus
@@ -961,7 +961,7 @@ class SIPCall(SIPDialog):
         media_flow: rtp.MediaFlowType,
     ) -> sdp.SDPSession:
         return self._client.generate_sdp_session(
-            session_id=hash(self._call_id),
+            session_id=abs(hash(self._call_id)),
             rtp_profiles_by_port=rtp_profiles_by_port,
             media_flow=media_flow,
         )
@@ -1094,7 +1094,12 @@ class SIPCall(SIPDialog):
         ok_response: SIPResponse = self._answer_response(
             request, rtp_profiles_by_port, media_flow
         )
+        assert ok_response.sdp is not None
         await self._send_message(ok_response)
+        # TODO: if the c= in the received SDP is not the server, we need to provide
+        #       the connection address to the sdp generation method so that our external IP
+        #       can be properly determined from it, and we can include it in our c= line
+        self._process_sent_sdp(ok_response)
         return ok_response
 
     async def _reply_ok(self, request: SIPRequest) -> SIPResponse:
@@ -1153,6 +1158,7 @@ class SIPClient:
         self._domain: str = (domain is not None and domain) or server_host
 
         self._server_addr: Tuple[str, int] = (server_host, server_port)
+        # FIXME: do we even need this local address now? Since we determine automatically our external address (be it interface or public IP)
         self._local_addr: Tuple[str, int] = (local_host, local_port)
 
         self._default_response_timeout: float = default_response_timeout
@@ -1208,6 +1214,15 @@ class SIPClient:
     @property
     def local_port(self) -> int:
         return self._local_addr[1]
+
+    @property
+    def own_ip_to_server(self):
+        return get_external_ip_for_dest(self.server_host)
+
+    @property
+    def own_addr_to_server(self) -> Tuple[str, int]:
+        # FIXME: if the connection is over NAT the port will be different as well!
+        return self.own_ip_to_server, self.local_port
 
     @property
     def server_uri(self):
@@ -1611,8 +1626,7 @@ class SIPClient:
         return hdr.Headers(
             hdr.ViaHeader(
                 "SIP/2.0/UDP",
-                self.local_host,
-                self.local_port,
+                *self.own_addr_to_server,
                 branch=generate_via_branch(),
                 # TODO: rport? what is it even?
             ),
@@ -1775,7 +1789,13 @@ class SIPClient:
         session_id: int,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
+        remote_address: Optional[Tuple[str, int]] = None,
     ) -> sdp.SDPSession:
+        if remote_address is None:
+            remote_address = self.server_addr
+
+        own_external_ip: str = get_external_ip_for_dest(remote_address[0])
+
         medias: List[sdp.SDPMedia] = []
         for port, profiles in rtp_profiles_by_port.items():
             media_type_set: Set[rtp.RTPMediaType] = {p.media_type for p in profiles}
@@ -1785,7 +1805,11 @@ class SIPClient:
             if media_type != rtp.RTPMediaType.AUDIO:
                 raise SIPUnsupportedError(f"Unsupported media type: {media_type}")
 
-            media_attributes: List[sdp.SDPMediaAttribute] = []
+            media_attributes: List[sdp.SDPMediaAttribute] = [
+                sdp.PTimeAttribute(20),
+                sdp.MaxPTimeAttribute(150),
+                sdp.get_media_flow_attribute(media_flow),
+            ]
             for profile in profiles:
                 # noinspection PyTypeChecker
                 media_attributes.append(
@@ -1793,21 +1817,19 @@ class SIPClient:
                         payload_type=int(profile.payload_type),
                         encoding_name=str(profile.encoding_name),
                         clock_rate=int(profile.clock_rate),
-                        encoding_parameters=str(profile.channels),
+                        encoding_parameters=None
+                        if profile.channels is None
+                        else str(profile.channels),
                     )
                 )
-                if profile == rtp.RTPMediaProfiles.TELEPHONE_EVENT:
+                if (
+                    rtp.RTPMediaProfiles.match(payload_type=profile.encoding_name)
+                    == rtp.RTPMediaProfiles.TELEPHONE_EVENT
+                ):
                     # noinspection PyTypeChecker
                     media_attributes.append(
                         sdp.FMTPAttribute(int(profile.payload_type), "0-15")
                     )
-                media_attributes.extend(
-                    [
-                        sdp.PTimeAttribute(20),
-                        sdp.MaxPTimeAttribute(150),
-                        sdp.get_media_flow_attribute(media_flow),
-                    ]
-                )
 
             # noinspection PyTypeChecker
             medias.append(
@@ -1833,10 +1855,10 @@ class SIPClient:
                 str(session_id + 1),
                 "IN",
                 "IP4",
-                self.local_host,
+                own_external_ip,
             ),
             name=sdp.SDPSessionName(f"{sibilant.__title__} {sibilant.__version__}"),
-            connection=sdp.SDPSessionConnection("IN", "IP4", self.local_host),
+            connection=sdp.SDPSessionConnection("IN", "IP4", own_external_ip),
             time=[sdp.SDPTime(sdp.SDPTimeTime(0, 0))],
             media=medias,
         )

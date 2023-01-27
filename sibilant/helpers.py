@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import enum
+import functools
+import ipaddress
 import re
+import socket
 import sys
+import time
 import types
 import typing
+import urllib.request
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass as _dtcls, is_dataclass
-from functools import wraps
 from inspect import isabstract
 from typing import (
     Any,
@@ -25,7 +29,9 @@ from typing import (
     Callable,
     get_args,
     get_origin,
-    TYPE_CHECKING, Protocol, AnyStr, )
+    TYPE_CHECKING,
+    Protocol,
+)
 from typing import Mapping
 
 try:
@@ -37,7 +43,7 @@ except ImportError:
 _dT = TypeVar("_dT")
 
 
-@wraps(_dtcls)
+@functools.wraps(_dtcls)
 def dataclass(*args, **kwargs) -> Callable[[_dT], _dT]:
     """Wrapper for dataclasses.dataclass that adds slots if supported (py3.10+)"""
     if sys.version_info >= (3, 10):
@@ -61,7 +67,9 @@ class SupportsStr(Protocol):
 class FieldsEnumDatatype:
     @property
     def enum_value(self) -> Any:
-        raise NotImplementedError("Must be overridden by getting the value from the field")
+        raise NotImplementedError(
+            "Must be overridden by getting the value from the field"
+        )
 
 
 # noinspection PyTypeChecker
@@ -75,11 +83,15 @@ class FieldsEnum(enum.Enum):
         if getattr(cls, "__wrapped_type__", None) is None:
             raise TypeError(f"{cls.__name__} must define __wrapped_type__")
         if not issubclass(cls.__wrapped_type__, FieldsEnumDatatype):
-            raise TypeError(f"{cls.__name__}.__wrapped_type__ must be a subclass of {FieldsEnumDatatype.__name__}")
+            raise TypeError(
+                f"{cls.__name__}.__wrapped_type__ must be a subclass of {FieldsEnumDatatype.__name__}"
+            )
 
     def __new__(cls, value: Any):
         if not isinstance(value, cls.__wrapped_type__):
-            raise TypeError(f"Expected subclass of {cls.__wrapped_type__.__name__}, got {type(value)}")
+            raise TypeError(
+                f"Expected subclass of {cls.__wrapped_type__.__name__}, got {type(value)}"
+            )
         if not is_dataclass(value):
             raise TypeError(f"Expected dataclass, got {type(value)}")
 
@@ -123,7 +135,9 @@ class FieldsEnum(enum.Enum):
         return str(self.enum_value)
 
 
-_AUTO = types.new_class("AUTO", bases=(FieldsEnumDatatype,))  # sentinel for AutoFieldsEnum wrapped type
+_AUTO = types.new_class(
+    "AUTO", bases=(FieldsEnumDatatype,)
+)  # sentinel for AutoFieldsEnum wrapped type
 
 
 # noinspection PyAbstractClass
@@ -132,6 +146,7 @@ class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
     """
     Enum class that mirrors the fields on a dataclass.
     """
+
     __wrapped_type__ = _AUTO
 
     def __init_subclass__(cls, **kwargs):
@@ -151,7 +166,9 @@ class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
 
     def __new__(cls, *args, **kwargs):
         dtcls_value = cls.__wrapped_type__(*args, **kwargs)
-        obj = FieldsEnum.__new_member__(cls, dtcls_value)  # yes, enum metaclasses make a mess of this
+        obj = FieldsEnum.__new_member__(
+            cls, dtcls_value
+        )  # yes, enum metaclasses make a mess of this
         obj._dtcls_value_ = dtcls_value
         return obj
 
@@ -411,3 +428,46 @@ class ListValueMixin:
 
     def serialize(self) -> str:
         return self.raw_value
+
+
+def time_cache(expiry: float, maxsize: int = 1, typed: bool = False):
+    """Simple time / expiration cache decorator, implmented atop functools.lru_cache."""
+
+    def decorator(func: Callable[..., _RT]) -> Callable[..., _RT]:
+        @functools.lru_cache(maxsize=maxsize, typed=typed)
+        def wrapper(*args: Any, **kwargs: Any) -> _RT:
+            return func(*args, **kwargs)
+
+        @functools.wraps(func)
+        def wrapped(*args: Any, **kwargs: Any) -> _RT:
+            now = time.monotonic()
+            if now > wrapper._time_cache_expiry:
+                wrapper.cache_clear()
+                wrapper._time_cache_expiry = now + expiry
+            return wrapper(*args, **kwargs)
+
+        wrapper._time_cache_expiry = 0.0
+        return wrapped
+
+    return decorator
+
+
+@time_cache(expiry=60.0)
+def get_public_ip() -> str:
+    """Get the public IP address of the current machine."""
+    return urllib.request.urlopen("https://ident.me").read().decode("utf8")
+
+
+def get_local_ip_for_dest(host):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect((host, 0))
+        return s.getsockname()[0]
+
+
+def get_external_ip_for_dest(host: str) -> str:
+    """Get the IP address of the current machine relative to the given host."""
+    is_private = ipaddress.ip_address(host).is_private
+    if is_private:
+        return get_local_ip_for_dest(host)
+    else:
+        return get_public_ip()
