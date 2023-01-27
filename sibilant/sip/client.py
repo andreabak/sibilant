@@ -169,9 +169,9 @@ class CallHandler(Protocol):
 CallHandlerFactory = Callable[["SIPCall"], CallHandler]
 
 
-class SIPDialogue(ABC):
+class SIPDialog(ABC):
     """
-    Implements a SIP dialogue, a single SIP session between two endpoints.
+    Implements a SIP dialog, a single SIP session between two endpoints.
     """
 
     def __init__(
@@ -207,39 +207,39 @@ class SIPDialogue(ABC):
 
         self._closed: bool = False
 
-        self._client.track_dialogue(self)
+        self._client.track_dialog(self)
 
     @property
     def client(self) -> SIPClient:
-        """The client associated to dialogue."""
+        """The client associated to dialog."""
         return self._client
 
     @property
     def call_id(self) -> str:
-        """The Call-ID for this dialogue."""
+        """The Call-ID for this dialog."""
         return self._call_id
 
     @property
     def cseq(self) -> int:
-        """The CSeq for this dialogue."""
+        """The CSeq for this dialog."""
         return self._cseq
 
     @property
     def closed(self) -> bool:
         """
-        Whether this dialogue is closed / has ended.
+        Whether this dialog is closed / has ended.
         The client should not be tracking it anymore,
         effectively rejecting any new messages related to it.
         """
         return self._closed
 
     def _close(self) -> None:
-        """Close this dialogue."""
-        self._client.untrack_dialogue(self)
+        """Close this dialog."""
+        self._client.untrack_dialog(self)
         self._closed = True
 
     async def terminate(self) -> None:
-        """Terminate this dialogue."""
+        """Terminate this dialog."""
         self._close()
 
     async def receive_message(self, message: SIPMessage) -> None:
@@ -399,7 +399,7 @@ class SIPDialogue(ABC):
         )
 
 
-class SIPRegistration(SIPDialogue):
+class SIPRegistration(SIPDialog):
     def __init__(self, client: SIPClient):
         super().__init__(
             client,
@@ -521,7 +521,7 @@ class CallState(enum.Enum):
     """Call has failed due to an error."""
 
 
-class SIPCall(SIPDialogue):
+class SIPCall(SIPDialog):
     def __init__(
         self,
         client: SIPClient,
@@ -1113,9 +1113,9 @@ class SIPClient:
         self._register_attempts: int = register_attempts
         self._register_timeout: float = register_timeout
         self._register_expires: int = register_expires
-        self._register_dialogue: Optional[SIPRegistration] = None
+        self._register_dialog: Optional[SIPRegistration] = None
 
-        self._dialogues: MutableMapping[str, SIPDialogue] = {}
+        self._dialogs: MutableMapping[str, SIPDialog] = {}
         """Map of call IDs to SIP sessions."""
 
         self._event_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
@@ -1126,10 +1126,6 @@ class SIPClient:
             name=f"{self.__class__.__name__}._run_event_loop-{id(self)}",
         )
         self._pending_futures: List[asyncio.Future] = []
-
-        # FIXME: wouldn't it be easier to use async to handle dialogues / callbacks?
-        #        we could keep threads for the UDP socket and use a queue to pass msgs
-        #        to the async loop, and use async for the callbacks, or run_coroutine_threadsafe
 
         self._socket: Optional[socket.socket] = None
         self._socket_lock: threading.Lock = threading.Lock()
@@ -1209,7 +1205,7 @@ class SIPClient:
 
     @property
     def registered(self) -> bool:
-        return bool(self._register_dialogue and self._register_dialogue.registered)
+        return bool(self._register_dialog and self._register_dialog.registered)
 
     @property
     def closed(self) -> bool:
@@ -1220,41 +1216,41 @@ class SIPClient:
         return self._default_response_timeout
 
     @property
-    def calls(self) -> Mapping[str, SIPDialogue]:
+    def calls(self) -> Mapping[str, SIPDialog]:
         return MappingProxyType(
             {
-                call_id: dialogue
-                for call_id, dialogue in self._dialogues.items()
-                if isinstance(dialogue, SIPCall)
+                call_id: dialog
+                for call_id, dialog in self._dialogs.items()
+                if isinstance(dialog, SIPCall)
             }
         )
 
     @property
-    def _dialogues_except_register(self) -> Mapping[str, SIPDialogue]:
+    def _dialogs_except_register(self) -> Mapping[str, SIPDialog]:
         return MappingProxyType(
             {
-                call_id: dialogue
-                for call_id, dialogue in self._dialogues.items()
-                if not isinstance(dialogue, SIPRegistration)
+                call_id: dialog
+                for call_id, dialog in self._dialogs.items()
+                if not isinstance(dialog, SIPRegistration)
             }
         )
 
-    def track_dialogue(self, dialogue: SIPDialogue):
-        assert dialogue.call_id not in self._dialogues
-        assert dialogue.client is self
-        self._dialogues[dialogue.call_id] = dialogue
+    def track_dialog(self, dialog: SIPDialog):
+        assert dialog.call_id not in self._dialogs
+        assert dialog.client is self
+        self._dialogs[dialog.call_id] = dialog
 
-    def untrack_dialogue(
-        self, dialogue: Optional[SIPDialogue], call_id: Optional[str] = None
+    def untrack_dialog(
+        self, dialog: Optional[SIPDialog], call_id: Optional[str] = None
     ):
-        if dialogue is None and call_id is None:
-            raise ValueError("Either 'dialogue' or 'call_id' must be specified")
-        if dialogue is not None and call_id is not None and dialogue.call_id != call_id:
-            raise ValueError("Call ID does not match dialogue")
+        if dialog is None and call_id is None:
+            raise ValueError("Either 'dialog' or 'call_id' must be specified")
+        if dialog is not None and call_id is not None and dialog.call_id != call_id:
+            raise ValueError("Call ID does not match dialog")
         if call_id is None:
-            assert dialogue is not None
-            call_id = dialogue.call_id
-        del self._dialogues[call_id]
+            assert dialog is not None
+            call_id = dialog.call_id
+        del self._dialogs[call_id]
 
     def start(self):
         try:
@@ -1286,8 +1282,8 @@ class SIPClient:
             raise
 
     def stop(self):
-        if self._dialogues_except_register:
-            self.schedule(self._close_active_dialogues()).result()
+        if self._dialogs_except_register:
+            self.schedule(self._close_active_dialogs()).result()
 
         if self.registered:
             self._deregister()
@@ -1358,8 +1354,8 @@ class SIPClient:
 
             if (
                 not (self._closing_event.is_set() or terminate_asap)
-                and self._register_dialogue is not None
-                and self._register_dialogue.closed
+                and self._register_dialog is not None
+                and self._register_dialog.closed
             ):
                 _logger.error("Registration or keep-alive failed, stopping client")
                 terminate_asap = True
@@ -1434,8 +1430,8 @@ class SIPClient:
 
         call_id: str = call_id_hdr.value
 
-        if call_id in self._dialogues:
-            await self._dialogues[call_id].receive_message(message)
+        if call_id in self._dialogs:
+            await self._dialogs[call_id].receive_message(message)
         elif isinstance(message, SIPRequest) and message.method == SIPMethod.INVITE:
             await self._handle_invite(message)
         else:
@@ -1453,34 +1449,31 @@ class SIPClient:
             self._socket.setblocking(False)
 
     def _register(self):
-        if self._register_dialogue is not None:
+        if self._register_dialog is not None:
             raise RuntimeError("Registration already active")
 
-        self._register_dialogue: Optional[SIPRegistration] = SIPRegistration(self)
+        self._register_dialog: Optional[SIPRegistration] = SIPRegistration(self)
 
-        self.schedule(self._register_dialogue.register()).result()  # wait
+        self.schedule(self._register_dialog.register()).result()  # wait
         _logger.debug(f"Registered with {self.server_host} with user {self._username}")
 
     def _deregister(self):
-        if self._register_dialogue is None:
+        if self._register_dialog is None:
             raise RuntimeError("Registration not active")
 
         async def _deregister():
-            await self._register_dialogue.deregister()
-            self._register_dialogue = None
+            await self._register_dialog.deregister()
+            self._register_dialog = None
 
         try:
             self.schedule(_deregister()).result()
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
 
-    async def _close_active_dialogues(self):
+    async def _close_active_dialogs(self):
         """schedule close all dialogs with their async close using gather"""
         await asyncio.gather(
-            *(
-                dialogue.terminate()
-                for dialogue in self._dialogues_except_register.values()
-            ),
+            *(dialog.terminate() for dialog in self._dialogs_except_register.values()),
             return_exceptions=True,
         )
 
