@@ -356,6 +356,7 @@ class RTPClient:
         # try to find a supported format and use that as RTPMediaProfile for the streams
         self._profile: RTPMediaProfiles
         for profile in self._media_profiles.values():
+            # TODO: maybe make sure we don't pick TELEPHONE_EVENT?
             if profile.name in SUPPORTED_RTP_PROFILES:
                 self._profile = profile
                 break
@@ -425,6 +426,10 @@ class RTPClient:
     @property
     def local_port(self) -> int:
         return self._local_addr[1]
+
+    @property
+    def profile(self) -> RTPMediaProfiles:
+        return self._profile
 
     @property
     def media_profiles(self) -> Mapping[int, RTPMediaProfiles]:

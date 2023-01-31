@@ -69,6 +69,11 @@ class VoIPCall:
         return self._sip_call.state
 
     @property
+    def rtp_profile(self) -> rtp.RTPMediaProfiles:
+        """Get the RTP profile."""
+        return self._rtp_client.profile
+
+    @property
     def can_accept_calls(self) -> bool:
         """Whether we can accept calls."""
         return self._phone.can_accept_calls
@@ -169,6 +174,8 @@ class VoIPCall:
         assert call.received_sdp is not None
         self._rtp_client.remote_addr = call.received_sdp.connection_address
         self._rtp_client.start()
+        if callable(self._phone.on_call_established):
+            self._phone.on_call_established(self)
 
     def read_audio(self, size: int = rtp.RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
         """
@@ -217,6 +224,7 @@ class PhoneState(enum.Enum):
 
 
 IncomingCallCallback = Callable[[VoIPCall], bool]
+EstablishedCallCallback = Callable[[VoIPCall], None]
 
 
 class VoIPPhone:
@@ -232,6 +240,7 @@ class VoIPPhone:
         local_host: str = "0.0.0.0",
         local_port: int = 0,
         on_incoming_call: Optional[IncomingCallCallback] = None,
+        on_call_established: Optional[EstablishedCallCallback] = None,
         sip_kwargs: Optional[Mapping[str, Any]] = None,
         rtp_kwargs: Optional[Mapping[str, Any]] = None,
     ):
@@ -251,6 +260,7 @@ class VoIPPhone:
         )
 
         self.on_incoming_call: Optional[IncomingCallCallback] = on_incoming_call
+        self.on_call_established: Optional[EstablishedCallCallback] = on_call_established
 
         self._calls: Dict[str, VoIPCall] = {}
         """Mapping of currently active calls, by call ID."""
@@ -269,6 +279,11 @@ class VoIPPhone:
     def calls(self) -> Mapping[str, VoIPCall]:
         """Get the currently active calls."""
         return MappingProxyType(self._calls)
+
+    @property
+    def registered(self) -> bool:
+        """Check if the phone is registered with the SIP server."""
+        return self._sip_client.registered
 
     @property
     def state(self) -> PhoneState:
