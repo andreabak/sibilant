@@ -1189,6 +1189,8 @@ class SIPClient:
 
         self._registered: bool = False
         self._recv_thread: Optional[threading.Thread] = None
+        self._recv_msg_hashes: Set[bytes] = set()
+        self._recv_ignore_count: int = 0
 
         self._closed: bool = True
         self._closing_event: threading.Event = threading.Event()
@@ -1467,10 +1469,17 @@ class SIPClient:
                 try:
                     data, addr = self._socket.recvfrom(8192)
                     # TODO: assert addr == self._server_addr?
-                except (socket.timeout, BlockingIOError):
+                except (socket.timeout, BlockingIOError, ConnectionResetError):
                     pass
                 else:
-                    return SIPMessage.parse(data, origin=addr)
+                    msg = SIPMessage.parse(data, origin=addr)
+                    data_hash: bytes = hashlib.md5(data).digest()
+                    if data_hash in self._recv_msg_hashes:
+                        _logger.debug(f"Ignoring retransmitted message: {msg!r}")
+                        self._recv_ignore_count += 1
+                    else:
+                        self._recv_msg_hashes.add(data_hash)
+                        return msg
 
             if not timeout:
                 break
