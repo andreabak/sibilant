@@ -1,16 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "sibilant"
 description = "sibilant makes python communicate over VoIP"
-homepage = "https://github.com/andreabak/sibilant"
 authors = [
     {name = "abk16", email = "awaken.mulled505@4wrd.cc"}
 ]
 version = "0.1.0"
 requires-python = ">=3.8"
 license = {text = "MPL-2.0"}
+dynamic = ["dependencies"]
+
+[project.urls]
+"Homepage" = "https://github.com/andreabak/sibilant"
 
 [tool.setuptools]
 license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+include = ["sibilant*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
 
 [tool.pytest.ini_options]
 addopts = "-vrxPs --cov=sibilant"
