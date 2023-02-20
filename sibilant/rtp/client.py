@@ -168,11 +168,14 @@ class RTPStreamBuffer(RawIOBase, IO):
         :param size: The maximum number of bytes to read.
         :raises RTPUnsupportedCodec: If the codec is not supported.
         """
+        raw_data: bytes = self.read(size)
+        if not raw_data:
+            return np.zeros(0, dtype=np.float32)
         if self._profile is None:
             raise ValueError("Stream has no profile set, cannot decode audio")
         if self._profile.media_type != RTPMediaType.AUDIO:
             raise ValueError("Can only read audio from a stream with audio profile")
-        return self._profile.decode(self.read(size))
+        return self._profile.decode(raw_data)
 
     def read_packet(
         self, packet: Union[RTPPacket, Mapping[str, Any]], size: int = DEFAULT_SIZE
@@ -369,13 +372,12 @@ class RTPClient:
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
         # FIXME: using two sockets doesn't seem to make a difference, refactor into one?
-        self._recv_socket: Optional[socket.socket] = None
-        self._send_socket: Optional[socket.socket] = None
+        self._socket: Optional[socket.socket] = None
 
         if pre_bind:
-            self._recv_socket = self._create_recv_socket()
-            assert self._recv_socket.family == socket.AF_INET
-            self._local_addr = self._recv_socket.getsockname()
+            self._socket = self._create_socket()
+            assert self._socket.family == socket.AF_INET
+            self._local_addr = self._socket.getsockname()
 
         self._recv_thread: Optional[threading.Thread] = None
         self._send_thread: Optional[threading.Thread] = None
@@ -393,8 +395,6 @@ class RTPClient:
 
     @remote_addr.setter
     def remote_addr(self, value: Optional[Tuple[str, int]]) -> None:
-        if self._send_socket is not None:
-            raise RuntimeError("Cannot change remote address after starting RTP client")
         if value is not None and value[1] == 0:
             raise ValueError("Remote RTP port must be non-zero")
         self._remote_addr = value
@@ -452,17 +452,17 @@ class RTPClient:
             self._send_thread is None or not self._send_thread.is_alive()
         )
 
-    def _create_recv_socket(self):
-        recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-        recv_socket.setblocking(False)
+    def _create_socket(self):
+        _socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+        _socket.setblocking(False)
 
         dynamic_port: bool = self._local_addr[1] == 0
         while True:
             if dynamic_port:
                 self._local_addr = (self._local_addr[0], DEFAULT_RTP_PORT_RANGE[0])
             try:
-                recv_socket.bind(self._local_addr)
+                _socket.bind(self._local_addr)
                 break
             except OSError as e:
                 if (
@@ -474,7 +474,7 @@ class RTPClient:
                 else:
                     raise
 
-        return recv_socket
+        return _socket
 
     def _create_recv_stream(self) -> RTPStreamBuffer:
         return RTPStreamBuffer(mode="w")
@@ -489,10 +489,8 @@ class RTPClient:
         if self._remote_addr is None:
             raise RuntimeError("Remote address not set")
 
-        if self._recv_socket is None:
-            self._recv_socket = self._create_recv_socket()
-
-        self._send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if self._socket is None:
+            self._socket = self._create_socket()
 
         # TODO: name threads
         self._recv_thread = threading.Thread(
@@ -511,11 +509,9 @@ class RTPClient:
         self._closing_event.set()
         self._recv_thread.join()
         self._send_thread.join()
-        self._recv_socket.close()
-        self._send_socket.close()
+        self._socket.close()
 
-        self._recv_socket = None
-        self._send_socket = None
+        self._socket = None
         self._recv_thread = None
         self._send_thread = None
         self._closing_event.clear()
@@ -536,7 +532,7 @@ class RTPClient:
 
             packet: Optional[RTPPacket] = None
             try:
-                data, addr = self._recv_socket.recvfrom(8192)
+                data, addr = self._socket.recvfrom(8192)
             except (socket.timeout, BlockingIOError):
                 pass
             else:
@@ -605,7 +601,13 @@ class RTPClient:
 
             packet: Optional[RTPPacket] = self._send_stream.read_packet(packet_data)
             if packet is not None:
-                self._send_socket.sendto(packet.serialize(), self._remote_addr)
+                try:
+                    self._socket.sendto(packet.serialize(), self._remote_addr)
+                except Exception as e:
+                    _logger.exception(
+                        f"Error sending RTP packet to {self._remote_addr}: {e}"
+                    )
+                    raise
 
             post_send_time_ns: int = time.perf_counter_ns()
             send_time: float = (post_send_time_ns - pre_send_time_ns) / 1e9
