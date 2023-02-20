@@ -917,7 +917,7 @@ class SIPCall(SIPDialog):
             return
 
         elif incoming_response in done:
-            await cancel_task_silent(incoming_response)
+            await cancel_task_silent(cancel_event)
 
             response: SIPMessage = incoming_response.result()
 
