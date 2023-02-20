@@ -231,6 +231,8 @@ class VoIPCall:
     # TODO: do we have too many startup/shutdown methods? Maybe just one each?
     def terminate_call(self, call: sip.SIPCall) -> None:
         """Terminate an established call. Stop handling streams."""
+        if callable(self._phone.on_call_terminated):
+            self._phone.on_call_terminated(self)
         self._rtp_client.stop()
         self.teardown_call(self._sip_call)
 
@@ -245,6 +247,7 @@ class PhoneState(enum.Enum):
 
 IncomingCallCallback = Callable[[VoIPCall], bool]
 EstablishedCallCallback = Callable[[VoIPCall], None]
+TerminatedCallCallback = Callable[[VoIPCall], None]
 
 
 class VoIPPhone:
@@ -261,6 +264,7 @@ class VoIPPhone:
         local_port: int = 0,
         on_incoming_call: Optional[IncomingCallCallback] = None,
         on_call_established: Optional[EstablishedCallCallback] = None,
+        on_call_terminated: Optional[TerminatedCallCallback] = None,
         sip_kwargs: Optional[Mapping[str, Any]] = None,
         rtp_kwargs: Optional[Mapping[str, Any]] = None,
     ):
@@ -281,6 +285,7 @@ class VoIPPhone:
 
         self.on_incoming_call: Optional[IncomingCallCallback] = on_incoming_call
         self.on_call_established: Optional[EstablishedCallCallback] = on_call_established
+        self.on_call_terminated: Optional[TerminatedCallCallback] = on_call_terminated
 
         self._calls: Dict[str, VoIPCall] = {}
         """Mapping of currently active calls, by call ID."""
