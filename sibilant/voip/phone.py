@@ -24,7 +24,7 @@ import numpy as np
 from .. import rtp, sip
 from ..constants import DEFAULT_SIP_PORT
 from ..exceptions import VoIPPhoneException, VoIPCallException, VoIPCallTimeoutError
-
+from ..structures import SIPAddress
 
 SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
     fmt if payload_type is None else dataclass_replace(fmt, payload_type=payload_type)
@@ -60,8 +60,18 @@ class VoIPCall:
 
     @property
     def call_id(self) -> str:
-        """Get the call ID."""
+        """The SIP call ID."""
         return self._sip_call.call_id
+
+    @property
+    def remote_address(self) -> SIPAddress:
+        """The address of the remote party."""
+        return self._sip_call.remote_address
+
+    @property
+    def number(self) -> str:
+        """The number (or user name) of the remote party."""
+        return self.remote_address.uri.user
 
     @property
     def state(self) -> sip.CallState:

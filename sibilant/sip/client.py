@@ -573,6 +573,15 @@ class CallState(enum.Enum):
     """Call has failed due to an error."""
 
 
+class CallSide(enum.Enum):
+    """Enums representing the side of a SIP call."""
+
+    CALLER = enum.auto()
+    """The caller side of a call."""
+    RECEIVER = enum.auto()
+    """The receiver side of a call."""
+
+
 class SIPCall(SIPDialog):
     def __init__(
         self,
@@ -587,6 +596,7 @@ class SIPCall(SIPDialog):
         from_tag: Optional[str] = None,
         call_id: Optional[str] = None,
         cseq: Optional[int] = None,
+        own_side: Optional[CallSide] = None,
         call_handler_factory: Optional[CallHandlerFactory] = None,
     ):
         if (to is None) == (to_address is None):
@@ -624,6 +634,13 @@ class SIPCall(SIPDialog):
             )
         assert uri is not None
 
+        if own_side is None:
+            if from_address == client.contact_address:
+                own_side = CallSide.CALLER
+            else:
+                own_side = CallSide.RECEIVER
+        assert own_side is not None
+
         super().__init__(
             client,
             uri=uri,
@@ -635,6 +652,7 @@ class SIPCall(SIPDialog):
             cseq=cseq,
         )
 
+        self._own_side: CallSide = own_side
         self._state: CallState = CallState.INIT
         self._received_sdp: Optional[sdp.SDPSession] = None
         self._sent_sdp: Optional[sdp.SDPSession] = None
@@ -645,6 +663,18 @@ class SIPCall(SIPDialog):
             call_handler_factory = self._client.call_handler_factory
 
         self._handler: CallHandler = call_handler_factory(self)
+
+    @property
+    def own_side(self) -> CallSide:
+        return self._own_side
+
+    @property
+    def remote_address(self) -> SIPAddress:
+        """The address of the remote party."""
+        if self.own_side == CallSide.CALLER:
+            return self._to_address
+        else:
+            return self._from_address
 
     @property
     def state(self) -> CallState:
@@ -1585,7 +1615,12 @@ class SIPClient:
         if call_handler_factory is None:
             call_handler_factory = self.call_handler_factory
 
-        call = SIPCall(self, to=contact, call_handler_factory=call_handler_factory)
+        call = SIPCall(
+            self,
+            to=contact,
+            own_side=CallSide.CALLER,
+            call_handler_factory=call_handler_factory,
+        )
         self.schedule(call.invite())
         return call
 
@@ -1596,7 +1631,7 @@ class SIPClient:
 
         # TODO: sanity check the message has From etc.
         _logger.debug(f"Received INVITE {message.headers['From']}: {message!r}")
-        call = SIPCall.from_request(self, message)
+        call = SIPCall.from_request(self, message, own_side=CallSide.RECEIVER)
         await call.receive_message(message)
 
     async def _handle_options(self, message: SIPRequest):
