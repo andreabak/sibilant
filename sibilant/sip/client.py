@@ -211,11 +211,12 @@ class SIPDialog(ABC):
         self._client.track_dialog(self)
 
     @classmethod
-    def from_request(cls, client: SIPClient, request: SIPRequest) -> Self:
-        """Create a new SIPCall instance from an incoming INVITE request."""
+    def from_request(cls, client: SIPClient, request: SIPRequest, **kwargs) -> Self:
+        """Create a new dialog from an incoming request."""
         to_header: hdr.ToHeader = request.headers.get("To")
         if to_header is None:
             raise SIPBadRequest(f"Missing To header: {request!r}")
+        to_tag = to_header.tag or generate_tag()
         from_header: hdr.FromHeader = request.headers.get("From")
         if from_header is None:
             raise SIPBadRequest(f"Missing From header: {request!r}")
@@ -224,10 +225,11 @@ class SIPDialog(ABC):
             client=client,
             to_address=to_header.address,
             from_address=from_header.address,
-            to_tag=to_header.tag,
+            to_tag=to_tag,
             from_tag=from_header.tag,
             call_id=request.headers["Call-ID"].value,
             cseq=request.headers["CSeq"].sequence,
+            **kwargs,
         )
 
     @property
@@ -341,31 +343,32 @@ class SIPDialog(ABC):
         await self._send_message(request)
         self._follow_cseq(request)
 
-    def _generate_request(self, method: SIPMethod, **kwargs) -> SIPRequest:
-        from_address: SIPAddress = kwargs.pop("from_address", self._from_address)
-        from_tag: Optional[str] = kwargs.pop("from_tag", self._from_tag)
-        to_address: SIPAddress = kwargs.pop("to_address", self._to_address)
-        to_tag: Optional[str] = kwargs.pop("to_tag", self._to_tag)
-        call_id: str = kwargs.pop("call_id", self._call_id)
-        cseq: int = kwargs.pop("cseq", self._cseq)
-        uri: SIPURI = kwargs.pop("uri", self._uri)
+    def _dialog_headers_kwargs(self, kwargs) -> Mapping[str, Any]:
+        """Get the headers that should be added to a request in this dialog."""
+        return dict(
+            from_address=kwargs.pop("from_address", self._from_address),
+            from_tag=kwargs.pop("from_tag", self._from_tag),
+            to_address=kwargs.pop("to_address", self._to_address),
+            to_tag=kwargs.pop("to_tag", self._to_tag),
+            call_id=kwargs.pop("call_id", self._call_id),
+        )
 
+    def _generate_request(self, method: SIPMethod, **kwargs) -> SIPRequest:
         return self._client.generate_request(
             method,
-            from_address=from_address,
-            from_tag=from_tag,
-            to_address=to_address,
-            to_tag=to_tag,
-            call_id=call_id,
-            cseq=cseq,
-            uri=uri,
+            **self._dialog_headers_kwargs(kwargs),
+            cseq=kwargs.pop("cseq", self._cseq),
+            uri=kwargs.pop("uri", self._uri),
             **kwargs,
         )
 
     def _generate_response_from_request(
         self, request: SIPRequest, status: SIPStatus, **kwargs
     ) -> SIPResponse:
-        return self._client.generate_response_from_request(request, status, **kwargs)
+        assert request.headers["Call-ID"].value == self._call_id
+        return self._client.generate_response_from_request(
+            request, status, **self._dialog_headers_kwargs(kwargs), **kwargs
+        )
 
     async def _might_authenticate(
         self,
