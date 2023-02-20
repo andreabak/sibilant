@@ -5,6 +5,8 @@ The unencoded audio format is float 32-bit PCM, returned as numpy arrays.
 
 from __future__ import annotations
 
+import audioop
+
 import numpy as np
 
 from .base import Codec
@@ -144,20 +146,32 @@ class PCMUCodec(Codec):
     """G.711 μ-law to numpy float32 codec"""
 
     def encode(self, data: np.ndarray) -> bytes:
-        # FIXME: clip to [-1, 1]
-        data = (data * (2**13 - 1)).astype(np.int16) + 2**13
-        return lin_u16_to_ulaw_lut.take(data).tobytes()
+        data_bytes: bytes = (data * (2**15 - 1)).astype(np.int16).tobytes()
+        return audioop.lin2ulaw(data_bytes, 2)
+        # FIXME: fix and restore numpy implementations / or find better solution
+        # # FIXME: clip to [-1, 1]
+        # data = (data * (2**13 - 1)).astype(np.int16) + 2**13
+        # return lin_u16_to_ulaw_lut.take(data).tobytes()
 
     def decode(self, data: bytes) -> np.ndarray:
-        return ulaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))
+        data_bytes: bytes = audioop.ulaw2lin(data, 2)
+        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (2 ** 15 - 1)
+        # FIXME: fix and restore numpy implementations / or find better solution
+        # return ulaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))
 
 
 class PCMACodec(Codec):
     """G.711 A-law to numpy float32 codec"""
 
     def encode(self, data: np.ndarray) -> bytes:
-        data = (data * (2**13 - 1)).astype(np.int16) + 2**13
-        return lin_u16_to_alaw_lut.take(data).tobytes()
+        data_bytes: bytes = (data * (2**15 - 1)).astype(np.int16).tobytes()
+        return audioop.lin2alaw(data_bytes, 2)
+        # FIXME: fix and restore numpy implementations / or find better solution
+        # data = (data * (2**13 - 1)).astype(np.int16) + 2**13
+        # return lin_u16_to_alaw_lut.take(data).tobytes()
 
     def decode(self, data: bytes) -> np.ndarray:
-        return alaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))
+        data_bytes: bytes = audioop.alaw2lin(data, 2)
+        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (2 ** 15 - 1)
+        # FIXME: fix and restore numpy implementations / or find better solution
+        # return alaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))
