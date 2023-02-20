@@ -75,12 +75,22 @@ class VoIPCall:
 
     @property
     def state(self) -> sip.CallState:
-        """Get the call state."""
+        """The call state."""
         return self._sip_call.state
 
     @property
+    def active(self) -> bool:
+        """Whether the call is active or soon to be."""
+        return self._sip_call.state in (
+            sip.CallState.RINGING,
+            sip.CallState.ANSWERING,
+            sip.CallState.ESTABLISHED,
+            sip.CallState.HANGING_UP,
+        )
+
+    @property
     def rtp_profile(self) -> rtp.RTPMediaProfiles:
-        """Get the RTP profile."""
+        """The RTP profile."""
         return self._rtp_client.profile
 
     @property
@@ -120,10 +130,10 @@ class VoIPCall:
         :class:`asyncio.CancelledError`, that the handler should catch to stop ringing.
         """
         # TODO: handle asyncio.CancelledError for early hangup (before answer)
-        self._phone.check_can_accept_calls()
+        self._phone.check_can_accept_calls(excluded_calls=[self])
         assert self._phone.on_incoming_call is not None
         result = await asyncio.get_event_loop().run_in_executor(
-            None, self._phone.on_incoming_call, call
+            None, self._phone.on_incoming_call, self
         )
         # TODO: do we need this? closing the call would call this anyways
         if not result:
@@ -318,10 +328,10 @@ class VoIPPhone:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.stop()
 
-    def check_can_accept_calls(self) -> None:
+    def check_can_accept_calls(self, excluded_calls=()) -> None:
         if not self._sip_client.registered:
             raise VoIPPhoneException("Phone is not registered with the server.")
-        if self._calls:
+        if any(call.active for call in self._calls.values() if call not in excluded_calls):
             # TODO: allow handling multiple calls at once
             raise VoIPPhoneException("Phone is busy with another call.")
         if self.on_incoming_call is None:
@@ -387,7 +397,7 @@ class VoIPPhone:
         try:
             while True:
                 active_calls: bool = any(
-                    call.state == sip.SIPCallState.ESTABLISHED
+                    call.state == sip.CallState.ESTABLISHED
                     for call in self._calls.values()
                 )
                 if self._calls and active_calls:
