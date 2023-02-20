@@ -223,7 +223,7 @@ class ViaHeader(Header):
             address=ip,
             port=port,
             **parsed_params,
-            extension=extension_params or None,
+            extension=extension_params,
             _order=tuple(order),
         )
 

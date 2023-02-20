@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, TYPE_CHECKING, TypeVar
+from typing import Optional, Dict, Any, TYPE_CHECKING, TypeVar, Tuple
 
 try:
     from typing import Self
@@ -571,13 +571,14 @@ _M = TypeVar("_M", bound="SIPMessage")
 
 
 class SIPMessage(ABC):
-    def __init__(self, version: str, headers: Headers, body: Optional[SupportsStr]):
+    def __init__(self, version: str, headers: Headers, body: Optional[SupportsStr], origin: Optional[Tuple[str, int]] = None):
         if version not in SUPPORTED_SIP_VERSIONS:
             raise SIPUnsupportedVersion(f"Unsupported SIP version: {version}")
 
         self.version: str = version
         self.headers: Headers = headers
         self.body: Optional[SupportsStr] = body
+        self.origin: Optional[Tuple[str, int]] = origin
 
         self.sdp: Optional[SDPSession] = (
             self.body if isinstance(self.body, SDPSession) else None
@@ -589,12 +590,12 @@ class SIPMessage(ABC):
         """Start line of the SIP message."""
 
     @classmethod
-    def parse(cls, data: bytes) -> _M:
+    def parse(cls, data: bytes, origin: Optional[Tuple[str, int]] = None) -> _M:
         if cls is SIPMessage:
             if re.search(rb"^SIP/[\d.]+", data):
-                return SIPResponse.parse(data)
+                return SIPResponse.parse(data, origin=origin)
             elif re.search(rb"^[^\r\n]+SIP/[\d.]+\r\n", data):
-                return SIPRequest.parse(data)
+                return SIPRequest.parse(data, origin=origin)
             else:
                 raise SIPParseError("Invalid SIP message")
 
@@ -605,7 +606,7 @@ class SIPMessage(ABC):
             start_line_kwargs: Dict[str, Any] = cls._parse_start_line(start_line)
             headers: Headers = Headers.parse(headers_fields)
             body: Any = cls._parse_body(headers, body_raw)
-            return cls(**start_line_kwargs, headers=headers, body=body)
+            return cls(**start_line_kwargs, headers=headers, body=body, origin=origin)
         except Exception as e:
             raise SIPParseError(f"Failed to parse SIP message: {e}\n{data}") from e
 
@@ -656,8 +657,9 @@ class SIPRequest(SIPMessage):
         version: str,
         headers: Optional[Headers] = None,
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
     ):
-        super().__init__(version, headers, body)
+        super().__init__(version, headers, body, origin=origin)
         self.method: SIPMethod = method
         self.uri: SIPURI = uri
 
@@ -686,8 +688,9 @@ class SIPResponse(SIPMessage):
         version: str,
         headers: Optional[Headers] = None,
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
     ):
-        super().__init__(version, headers, body)
+        super().__init__(version, headers, body, origin=origin)
         self.status: SIPStatus = status
 
     @property

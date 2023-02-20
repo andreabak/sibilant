@@ -1467,7 +1467,7 @@ class SIPClient:
                 except (socket.timeout, BlockingIOError):
                     pass
                 else:
-                    return SIPMessage.parse(data)
+                    return SIPMessage.parse(data, origin=addr)
 
             if not timeout:
                 break
@@ -1600,6 +1600,7 @@ class SIPClient:
         call_id: str,
         cseq: int,
         cseq_method: SIPMethod,
+        via_hdr: Optional[hdr.ViaHeader] = None,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1616,6 +1617,14 @@ class SIPClient:
         if call_id is None:  # TODO: make this mandatory?
             call_id = generate_call_id(*self.local_addr)
 
+        if via_hdr is None:
+            via_hdr = hdr.ViaHeader(
+                "SIP/2.0/UDP",
+                *self.own_addr_to_server,
+                branch=generate_via_branch(),
+                # TODO: rport? what is it even?
+            )
+
         if contact is None:
             contact = self.contact
 
@@ -1624,12 +1633,7 @@ class SIPClient:
             extra_headers.append(hdr.AllowHeader(list(allow)))
 
         return hdr.Headers(
-            hdr.ViaHeader(
-                "SIP/2.0/UDP",
-                *self.own_addr_to_server,
-                branch=generate_via_branch(),
-                # TODO: rport? what is it even?
-            ),
+            via_hdr,
             hdr.FromHeader(from_address, tag=from_tag),
             hdr.ToHeader(to_address, tag=to_tag),
             hdr.CallIDHeader(call_id),
@@ -1691,6 +1695,7 @@ class SIPClient:
         self,
         status: SIPStatus,
         *,
+        via_hdr: hdr.ViaHeader,
         from_address: SIPAddress,
         to_address: SIPAddress,
         call_id: str,
@@ -1711,6 +1716,7 @@ class SIPClient:
             call_id=call_id,
             cseq=cseq,
             cseq_method=cseq_method,
+            via_hdr=via_hdr,
             contact=contact,
             from_tag=from_tag,
             to_tag=to_tag,
@@ -1737,6 +1743,7 @@ class SIPClient:
                         req_value = getattr(req_value, attr)
                     kwargs[kwarg] = req_value
 
+        set_from_request("via_hdr", "Via", None)
         set_from_request("from_address", "From", "address")
         set_from_request("from_tag", "From", "tag")
         set_from_request("to_address", "To", "address")
@@ -1745,7 +1752,14 @@ class SIPClient:
         set_from_request("cseq", "CSeq", "sequence")
         set_from_request("cseq_method", "CSeq", "method")
         set_from_request("contact", "Contact", None)
-        return self.generate_response(status, **kwargs)
+
+        via_hdr: hdr.ViaHeader = kwargs.pop("via_hdr")
+        if via_hdr.received is None and request.origin is not None:
+            received, rport = request.origin
+            via_hdr = dataclass_replace(via_hdr, received=received)
+            via_hdr.rport = rport
+
+        return self.generate_response(status, via_hdr=via_hdr, **kwargs)
 
     def generate_auth(self, response: SIPResponse) -> Optional[hdr.AuthorizationHeader]:
         auth_header: Optional[hdr.WWWAuthenticateHeader] = response.headers.get(
