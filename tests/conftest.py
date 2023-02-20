@@ -17,6 +17,65 @@ from dpkt.utils import inet_to_str
 _logger = logging.getLogger(__name__)
 
 
+def pytest_addoption(parser):
+    parser.addoption("--test-server-address", help="Address of the test server")
+    parser.addoption(
+        "--test-server-username", help="Username to use for the test server"
+    )
+    parser.addoption(
+        "--test-server-password", help="Password to use for the test server"
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "needs_test_server: mark test as needing a test server"
+    )
+
+
+def get_test_server_options(config):
+    server_address = config.getoption("--test-server-address")
+    server_kwargs = dict(server_host=server_address)
+    if server_address and ":" in server_address:
+        server_host, server_port = server_address.split(":")
+        server_kwargs.update(server_host=server_host, server_port=int(server_port))
+    phone_kwargs = dict(
+        username=config.getoption("--test-server-username"),
+        password=config.getoption("--test-server-password"),
+        **server_kwargs,
+    )
+    if not any(phone_kwargs.values()):
+        raise ValueError(
+            "need --test-server command line options to run with a real server"
+        )
+    elif not all(phone_kwargs.values()):
+        raise ValueError(
+            "need ALL these command line options to run with a real server: "
+            "--test-server-address, --test-server-username, --test-server-password"
+        )
+    return phone_kwargs
+
+
+def pytest_collection_modifyitems(config, items):
+    enable_real_server_tests = False
+    skip_real_server_tests_reason = "need --test-server command line options to run"
+    try:
+        get_test_server_options(config)
+        enable_real_server_tests = True
+    except ValueError as e:
+        skip_real_server_tests_reason = str(e)
+
+    skip_needs_test_server = pytest.mark.skip(reason=skip_real_server_tests_reason)
+    for item in items:
+        if "needs_test_server" in item.keywords and not enable_real_server_tests:
+            item.add_marker(skip_needs_test_server)
+
+
+@pytest.fixture(scope="session")
+def test_server_kwargs(pytestconfig):
+    return get_test_server_options(pytestconfig)
+
+
 class Dest(enum.Enum):
     CLIENT = enum.auto()
     SERVER = enum.auto()
