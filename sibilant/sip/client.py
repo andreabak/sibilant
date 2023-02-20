@@ -841,8 +841,8 @@ class SIPCall(SIPDialog):
                     self._process_received_message(request)
                     if self._received_sdp is None:
                         raise SIPBadRequest("Never received SDP in INVITE transaction")
-                    self._handler.establish_call(self)
                     self._state = CallState.ESTABLISHED
+                    self._handler.establish_call(self)
                     return
 
             except asyncio.TimeoutError as e:
