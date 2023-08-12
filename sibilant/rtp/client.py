@@ -196,8 +196,9 @@ class RTPStreamBuffer(RawIOBase, IO):
             data = self.read(size)
             if not data:
                 return None
+            time_span: int = len(data)  # FIXME: depends on profile, this hack works for PCMA/PCMU
             self.sequence = (self.sequence + 1) % self.SEQUENCE_MAX
-            self.timestamp = (self.timestamp + size) % self.TIMESTAMP_MAX
+            self.timestamp = (self.timestamp + time_span) % self.TIMESTAMP_MAX
 
         if isinstance(packet, Mapping):
             packet = RTPPacket(
@@ -381,6 +382,7 @@ class RTPClient:
 
         self._recv_thread: Optional[threading.Thread] = None
         self._send_thread: Optional[threading.Thread] = None
+        self._last_send_time_ns: Optional[int] = None
 
         # TODO: move these to the streams?
         self._recv_stats: RTPPacketsStats = RTPPacketsStats()
@@ -597,7 +599,7 @@ class RTPClient:
         )
 
         while not self._closing_event.is_set():
-            pre_send_time_ns: int = time.perf_counter_ns()
+            pre_send_time_ns: int = self._last_send_time_ns or time.perf_counter_ns()
 
             packet: Optional[RTPPacket] = self._send_stream.read_packet(packet_data)
             if packet is not None:
@@ -615,6 +617,7 @@ class RTPClient:
                 self._send_stats.add(packet, send_time)
             packet_duration: float = packet and packet.duration or 0.0
             sleep_time: float = max(0.0, max(1 / 96_000, packet_duration) - send_time)
+            self._last_send_time_ns = post_send_time_ns
             time.sleep(sleep_time * self._send_delay_factor)
 
     def read(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> bytes:

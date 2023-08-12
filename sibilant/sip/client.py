@@ -929,8 +929,8 @@ class SIPCall(SIPDialog):
 
                 await self._send_ack(invite)
 
-                self._handler.establish_call(self)
                 self._state = CallState.ESTABLISHED
+                self._handler.establish_call(self)
                 return
 
             # TODO: handle other failure modes
