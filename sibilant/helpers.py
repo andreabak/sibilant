@@ -46,9 +46,8 @@ _dT = TypeVar("_dT")
 @functools.wraps(_dtcls)
 def dataclass(*args, **kwargs) -> Callable[[_dT], _dT]:
     """Wrapper for dataclasses.dataclass that adds slots if supported (py3.10+)"""
-    if sys.version_info >= (3, 10):
-        kwargs["slots"] = True
-    else:
+    # TODO: restore slots=True default once https://github.com/python/cpython/issues/91126 is fixed
+    if sys.version_info < (3, 10):
         kwargs.pop("slots", None)
     return _dtcls(*args, **kwargs)
 
@@ -343,15 +342,16 @@ class Registry(ABC, Generic[_ID, _RT]):
                     f"no {cls.__registry_attr_name__} defined in the class body"
                 )
 
-            existing_registered_class: Optional[_RTc] = cls.__registry__.get(
-                registry_id
-            )
-            if existing_registered_class is not None:
-                raise NameError(
-                    f"More than one {cls.__registry_root__.__name__} subclass with "
-                    f'the same {cls.__registry_attr_name__} "{registry_id}" defined: '
-                    f"{existing_registered_class.__name__} and {cls.__name__}"
-                )
+            conflict_cls: Optional[_RTc] = cls.__registry__.get(registry_id)
+            if conflict_cls is not None:
+                cls_fullname = (cls.__module__, cls.__qualname__)
+                conflict_fullname = (conflict_cls.__module__, conflict_cls.__qualname__)
+                if cls_fullname != conflict_fullname:  # not reinit
+                    raise NameError(
+                        f"More than one {cls.__registry_root__.__name__} subclass with "
+                        f'the same {cls.__registry_attr_name__} "{registry_id}" defined: '
+                        f"{conflict_cls.__name__} and {cls.__name__}"
+                    )
             cls.__registry__[registry_id] = cls
 
     @classmethod

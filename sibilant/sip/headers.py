@@ -128,7 +128,7 @@ class Header(
         return f"{self.name}: {self.serialize()}"
 
 
-@dataclass(slots=True)
+@dataclass
 class StrHeader(StrValueMixin, Header, ABC):
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
@@ -150,7 +150,7 @@ class UnknownHeader(StrHeader):
         return cls(header=header, value=value)
 
 
-@dataclass(slots=True)
+@dataclass
 class IntHeader(IntValueMixin, Header, ABC):
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
@@ -245,7 +245,7 @@ class ViaHeader(Header):
         return f"{self.method} {host}{''.join(params)}"
 
 
-@dataclass(slots=True)
+@dataclass
 class FromToHeader(Header, ABC):
     address: SIPAddress
     raw_address: Optional[str] = None

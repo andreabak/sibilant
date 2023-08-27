@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPTimeFields(SDPField, ABC, registry=True, registry_attr="_type"):
     ...
 

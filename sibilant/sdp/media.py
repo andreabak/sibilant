@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPMediaFields(SDPField, ABC, registry=True, registry_attr="_type"):
     ...
 
@@ -162,7 +162,7 @@ class SDPMediaEncryption(SDPEncryptionField, SDPMediaFields):
     _description = "encryption key"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPMediaAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"):
     ...
 
