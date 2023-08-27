@@ -64,7 +64,7 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPSessionFields(SDPField, ABC, registry=True, registry_attr="_type"):
     ...
 
@@ -315,7 +315,7 @@ class SDPSessionEncryption(SDPEncryptionField, SDPSessionFields):
     _description = "encryption key"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPSessionAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"):
     ...
 
@@ -360,7 +360,7 @@ class SDPSessionAttributeField(SDPAttributeField, SDPSessionFields):
     _description = "zero or more session attribute lines"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPSession(SDPSection):
     _fields_base = SDPSessionFields
     _start_field = SDPSessionVersion

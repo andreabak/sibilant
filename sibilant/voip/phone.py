@@ -171,7 +171,7 @@ class VoIPCall:
         """Hangup the call."""
         # send either a SIP BYE or a CANCEL depending on the call state (answered or not)
         if self.state == sip.CallState.ESTABLISHED:
-            self._sip_call.client.event_loop.run_until_complete(self._sip_call.bye())
+            asyncio.run_coroutine_threadsafe(self._sip_call.bye(), self._sip_call.client.event_loop).result()
         elif self.state in (sip.CallState.INVITE, sip.CallState.RINGING):
             self._sip_call.set_cancel()
         else:
@@ -321,7 +321,9 @@ class VoIPPhone:
 
     def stop(self) -> None:
         self._stopping_event.set()
-        # TODO: teardown calls
+        call: VoIPCall
+        for call in list(self._calls.values()):
+            call.hangup()
         self._sip_client.stop()
         self._state = PhoneState.INACTIVE
         self._stopping_event.clear()

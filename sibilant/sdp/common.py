@@ -56,7 +56,7 @@ __all__ = [
 ]
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPField(Registry[str, "SDPField"], ABC):
     _type: ClassVar[str]
     _description: ClassVar[str]
@@ -108,7 +108,7 @@ class SDPField(Registry[str, "SDPField"], ABC):
         return f"{self.type}={self.serialize()}"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
     _name: ClassVar[Union[str, type(DEFAULT)]]
     _is_flag: ClassVar[Optional[bool]] = None
@@ -169,7 +169,7 @@ class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
         return f"{self.name}:{self.serialize()}" if not self.is_flag else self.name
 
 
-@dataclass(slots=True)
+@dataclass
 class FlagAttribute(SDPAttribute, ABC):
     _is_flag: ClassVar[bool] = True
 
@@ -181,7 +181,7 @@ class FlagAttribute(SDPAttribute, ABC):
         raise ValueError("Flag attributes have no value to serialize")
 
 
-@dataclass(slots=True)
+@dataclass
 class ValueAttribute(SDPAttribute, ABC):
     value: Any
 
@@ -190,7 +190,7 @@ class ValueAttribute(SDPAttribute, ABC):
         return cls(value=raw_value)
 
 
-@dataclass(slots=True)
+@dataclass
 class UnknownAttribute(StrValueMixin, SDPAttribute, ABC):
     _name = DEFAULT
 
@@ -209,27 +209,27 @@ class MediaFlowAttribute(FlagAttribute, ABC):
     _is_flag = True
 
 
-@dataclass(slots=True)
+@dataclass
 class RecvOnlyFlag(MediaFlowAttribute, ABC):
     _name = "recvonly"
 
 
-@dataclass(slots=True)
+@dataclass
 class SendRecvFlag(MediaFlowAttribute, ABC):
     _name = "sendrecv"
 
 
-@dataclass(slots=True)
+@dataclass
 class SendOnlyFlag(MediaFlowAttribute, ABC):
     _name = "sendonly"
 
 
-@dataclass(slots=True)
+@dataclass
 class InactiveFlag(MediaFlowAttribute, ABC):
     _name = "inactive"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPInformationField(StrValueMixin, SDPField, ABC):
     """
     SDP session information field, defined in :rfc:`4566#section-5.4`.
@@ -245,7 +245,7 @@ class SDPInformationField(StrValueMixin, SDPField, ABC):
         return self.value
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPConnectionField(SDPField, ABC):
     """
     SDP session connection field, defined in :rfc:`4566#section-5.7`.
@@ -304,7 +304,7 @@ class SDPConnectionField(SDPField, ABC):
         return " ".join((self.nettype, self.addrtype, self.connection_address))
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPBandwidthField(SDPField, ABC):
     """
     SDP session bandwidth field, defined in :rfc:`4566#section-5.8`.
@@ -327,7 +327,7 @@ class SDPBandwidthField(SDPField, ABC):
         return f"{self.bwtype}:{self.bandwidth}"
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPEncryptionField(SDPField, ABC):
     """
     SDP session encryption field, defined in :rfc:`4566#section-5.12`.
@@ -353,7 +353,7 @@ class SDPEncryptionField(SDPField, ABC):
         return f"{self.method}:{self.key}" if self.key else self.method
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPAttributeField(SDPField, ABC):
     _type = "a"
     _attribute_cls: ClassVar[Type[SDPAttribute]]
@@ -384,7 +384,7 @@ class SDPAttributeField(SDPField, ABC):
         return str(self.attribute)
 
 
-@dataclass(slots=True)
+@dataclass
 class SDPSection(ABC):
     _fields_base: ClassVar[Type[SDPField]]
     _start_field: ClassVar[Type[SDPField]]
