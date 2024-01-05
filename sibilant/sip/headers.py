@@ -62,6 +62,8 @@ __all__ = [
     "UserAgentHeader",
     "AuthorizationHeader",
     "WWWAuthenticateHeader",
+    "ProxyAuthorizationHeader",
+    "ProxyAuthenticateHeader",
     "Headers",
 ]
 
@@ -499,6 +501,16 @@ class AuthorizationHeader(Header):
 @dataclass(slots=True)
 class WWWAuthenticateHeader(AuthorizationHeader):
     _name = "WWW-Authenticate"
+
+
+@dataclass(slots=True)
+class ProxyAuthorizationHeader(AuthorizationHeader):
+    _name = "Proxy-Authorization"
+
+
+@dataclass(slots=True)
+class ProxyAuthenticateHeader(WWWAuthenticateHeader):
+    _name = "Proxy-Authenticate"
 
 
 class Headers(CaseInsensitiveDict[_H]):
