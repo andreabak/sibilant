@@ -2,3 +2,4 @@ toml
 frozendict
 cbitstruct
 numpy
+typing-extensions
