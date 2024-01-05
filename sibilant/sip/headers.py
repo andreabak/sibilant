@@ -456,6 +456,7 @@ class AuthorizationHeader(Header):
         if scheme.lower() != "digest":
             raise SIPParseError(f"Unsupported authorization scheme: {scheme}")
         # split by commas, remove whitespaces, split by equal sign, remove quotes
+        # FIXME: quoted values might contain commas!
         params = {
             key: value.strip('"')
             for key, value in (
@@ -463,6 +464,7 @@ class AuthorizationHeader(Header):
                 for param in params.strip().split(",")
             )
         }
+        # TODO: qop can be a comma-separated list of values and might be quoted
         known_param_names = {f.name for f in dataclass_fields(cls)} - {"auth_params"}
         known_params = {
             name: value for name, value in params.items() if name in known_param_names
