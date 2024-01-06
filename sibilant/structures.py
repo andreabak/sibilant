@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from dataclasses import dataclass
 
 
+DEFAULT_SCHEME: str = "sip"
+
 ALLOWED_SYMBOLS: str = r"_.!~*'()%\-"
 UW = ALLOWED_SYMBOLS
 
@@ -50,7 +52,7 @@ class SIPURI:
     port: Optional[int] = None
     user: Optional[str] = None
     password: Optional[str] = None
-    scheme: str = "sip"
+    scheme: str = DEFAULT_SCHEME
     params: Mapping[str, Optional[str]] = dataclass_field(default_factory=frozendict)
     headers: Mapping[str, str] = dataclass_field(default_factory=frozendict)
 
@@ -86,7 +88,7 @@ class SIPURI:
             port=match.group("port"),
             user=match.group("user"),
             password=match.group("password"),
-            scheme=match.group("scheme"),
+            scheme=match.group("scheme") or DEFAULT_SCHEME,
             params=frozendict(params),
             headers=frozendict(headers),
         )
