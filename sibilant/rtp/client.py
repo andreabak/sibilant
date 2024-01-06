@@ -9,7 +9,7 @@ import time
 from io import RawIOBase
 from collections import deque
 from types import MappingProxyType
-from typing import IO, Deque, Optional, Mapping, Any, Union, Tuple, Collection
+from typing import IO, Deque, Optional, Mapping, Dict, Any, Union, Tuple, Collection, List
 
 import errno
 import numpy as np
@@ -61,6 +61,9 @@ class RTPStreamBuffer(RawIOBase, IO):
         if mode not in ("r", "w"):
             raise ValueError("`mode` must be either 'r' or 'w'")
 
+        # FIXME: implement tracking multiplexed streams (this class needs to be reworked, stream tracking decoupled from socket)
+
+        # FIXME use 0s for initial values
         if initial_sequence is None:
             initial_sequence = (
                 random.randint(0, self.SEQUENCE_MAX)
@@ -110,6 +113,14 @@ class RTPStreamBuffer(RawIOBase, IO):
     @property
     def profile(self) -> Optional[RTPMediaProfiles]:
         return self._profile
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    @property
+    def max_pending(self) -> int:
+        return self._max_pending
 
     @property
     def seen_count(self) -> int:
@@ -369,7 +380,7 @@ class RTPClient:
 
         self._send_delay_factor: float = send_delay_factor
 
-        self._recv_stream: RTPStreamBuffer = self._create_recv_stream()
+        self._recv_streams: Dict[int, RTPStreamBuffer] = {}
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
         # FIXME: using two sockets doesn't seem to make a difference, refactor into one?
@@ -544,13 +555,6 @@ class RTPClient:
                 except RTPParseError as e:
                     _logger.debug(f"Error parsing RTP packet: {e}")
 
-                except RTPBrokenStreamError as e:
-                    _logger.debug(str(e))
-                    # FIXME: decide whether we should do something else here?
-                    #        somehow raise outside the thread? set some err flag?
-                    self._recv_stream = self._create_recv_stream()
-                    packet = self._recv_packet(data)
-
             end_time_ns: int = time.perf_counter_ns()
             if packet is not None:
                 self._recv_stats.add(packet, (end_time_ns - start_time_ns) / 1e9)
@@ -567,18 +571,46 @@ class RTPClient:
         if packet.payload_type.payload_type not in self._media_profiles:
             raise RTPParseError(f"Unexpected payload type {packet.payload_type}")
 
+        try:
+            recvd_packet = self._recv_to_stream(packet)
+        except RTPBrokenStreamError as e:
+            _logger.debug(str(e))
+            # FIXME: decide whether we should do something else here?
+            #        somehow raise outside the thread? set some err flag?
+            del self._recv_streams[packet.ssrc]
+            recvd_packet = self._recv_to_stream(packet)
+
+        # cleanup dead streams  # TODO: check. This assumes all streams share the same sequence
+        max_sequence = max(stream.sequence for stream in self._recv_streams.values())
+        for ssrc, stream in list(self._recv_streams.items()):
+            if stream.sequence < max_sequence - stream.max_pending:
+                # broken stream
+                _logger.debug(f"RTP stream (SSRC={ssrc}) broken, untracking")
+                del self._recv_streams[ssrc]
+
+        return recvd_packet
+
+    def _recv_to_stream(self, packet: RTPPacket) -> Optional[RTPPacket]:
+        """
+        Writes a received RTP packet into the appropriate input stream.
+        """
+        if packet.ssrc not in self._recv_streams:
+            self._recv_streams[packet.ssrc] = self._create_recv_stream()
+
+        recv_stream = self._recv_streams[packet.ssrc]
+
         if (
-            self._recv_stream.profile is None
-            or packet.payload_type == self._recv_stream.profile
+            recv_stream.profile is None
+            or packet.payload_type == recv_stream.profile
         ):
-            self._recv_stream.write_packet(packet)
-        else:
+            recv_stream.write_packet(packet)
+        else:  # FIXME: kinda hacky, should probably happen somewhere else?
             profile = self._media_profiles[packet.payload_type.payload_type]
             if profile == RTPMediaProfiles.TELEPHONE_EVENT:
                 self._handle_telephone_event(packet)
-                if packet.ssrc == self._recv_stream.ssrc:
-                    self._recv_stream.sequence = packet.sequence
-                    self._recv_stream.timestamp = packet.timestamp
+                if packet.ssrc == recv_stream.ssrc:
+                    recv_stream.sequence = packet.sequence
+                    recv_stream.timestamp = packet.timestamp
             else:
                 raise RTPUnhandledPayload(
                     f"Unhandled or unexpected payload type {packet.payload_type}"
@@ -627,7 +659,56 @@ class RTPClient:
 
         :param size: The maximum number of bytes to read.
         """
-        return self._recv_stream.read(size)
+        if not self._recv_streams:
+            return b''
+        if len(self._recv_streams) > 1:
+            # FIXME: handle multiplexed streams
+            raise NotImplementedError('Reading a single stream from multiple streams is not supported')
+
+        stream = next(iter(self._recv_streams.values()))
+        return stream.read(size)
+
+    def _mix_recv_audio_streams(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
+        """
+        If there are multiple active recv streams we need to mix them together.
+        """
+        mix_buf = np.ndarray([], dtype=np.float32)
+
+        if not self._recv_streams:
+            return mix_buf
+        elif len(self._recv_streams) == 1:
+            stream = next(iter(self._recv_streams.values()))
+            return stream.read_audio(size)
+
+        # FIXME: assumes PCMA/PCMU streams, 160 bytes, 20ms packets
+        min_offset: int = RTPStreamBuffer.SEQUENCE_MAX * 160
+        max_offset: int = 0
+        streams_timeline: List[Tuple[RTPStreamBuffer, int, int]] = []
+        for stream in self._recv_streams.values():
+            if stream.pending_count:  # cannot mix streams with pending packets, must wait
+                assert mix_buf.size == 0
+                return mix_buf
+            end_offset = (stream.sequence * 160)
+            start_offset = end_offset - stream.buffer_len
+            streams_timeline.append((stream, start_offset, end_offset))
+            min_offset = min(min_offset, start_offset)
+            max_offset = max(max_offset, end_offset)
+            # FIXME: handle sequence wrap-around somehow
+
+        buf_size: int = max(0, min(max_offset - min_offset, size))
+        if buf_size < 0:
+            _logger.debug(f"RTP mix: buffer size is negative ({buf_size})")
+            buf_size = 0
+        if not buf_size:
+            return mix_buf
+        mix_buf = np.zeros(buf_size, dtype=np.float32)
+        for stream, start_offset, end_offset in streams_timeline:
+            mix_offset = start_offset - min_offset
+            read_size = min(buf_size - mix_offset, end_offset - start_offset)
+            if read_size > 0:
+                mix_buf[mix_offset:mix_offset+read_size] += stream.read_audio(read_size)
+
+        return mix_buf
 
     def read_audio(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
         """
@@ -639,7 +720,7 @@ class RTPClient:
         :param size: The maximum number of bytes to read.
         :raises RTPUnsupportedCodec: If the codec is not supported.
         """
-        return self._recv_stream.read_audio(size)
+        return self._mix_recv_audio_streams(size)
 
     def _handle_telephone_event(self, packet: RTPPacket):
         """
