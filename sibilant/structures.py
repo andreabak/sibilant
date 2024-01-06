@@ -133,7 +133,7 @@ class SIPAddress:
 
     def __str__(self) -> str:
         """Serialize the SIP address to a string."""
-        result: str = f"<{self.uri}>" if self.force_brackets else str(self.uri)
+        result: str = f"<{self.uri}>" if self.force_brackets or self.display_name else str(self.uri)
         if self.display_name:
             result = f'"{self.display_name}" {result}'
         return result
