@@ -1677,7 +1677,7 @@ class SIPClient:
                     host=self.server_host, port=self.server_port, user=contact
                 )
             else:
-                contact = SIPAddress.parse(contact)
+                contact = SIPAddress.parse(contact, force_brackets=True)
         if isinstance(contact, SIPURI):
             contact = SIPAddress(uri=contact)
         if not isinstance(contact, SIPAddress):
