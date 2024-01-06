@@ -200,6 +200,9 @@ class SIPDialog(ABC):
         self._call_id: str = call_id or generate_call_id(*self._client.local_addr)
         self._cseq: int = cseq if cseq is not None else generate_cseq()
 
+        self._rport: Optional[int] = None
+        self._destination: Optional[Tuple[str, int]] = None
+
         self._cnonce: Optional[str] = None
 
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
@@ -293,6 +296,7 @@ class SIPDialog(ABC):
 
         else:
             # We're not expecting anything, try to handle the message
+            self._store_sender(message, replace=False)
             await self._handle_message(message)
 
     @abstractmethod
@@ -324,9 +328,22 @@ class SIPDialog(ABC):
             msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
         self._expecting_msg = True
         try:
-            return await msg_getter()
+            message = await msg_getter()
+            self._store_sender(message)
+            return message
         finally:
             self._expecting_msg = False
+
+    def _store_sender(self, message: SIPMessage, replace: bool = True) -> None:
+        """Store sender information from origin and Via header of a received message"""
+        # TODO: make sure called only on received messages
+        via_hdr: hdr.ViaHeader = message.headers.get("Via")
+        if via_hdr is None:
+            raise SIPBadMessage("Missing Via header")
+        if isinstance(via_hdr.rport, int) and not self._rport or replace:
+            self._rport = via_hdr.rport
+        if not self._destination or replace:
+            self._destination = message.origin
 
     def _follow_cseq(self, request: SIPMessage) -> SIPMessage:
         """Set the internal CSeq to the one in the request and increment it."""
@@ -347,12 +364,18 @@ class SIPDialog(ABC):
 
     def _dialog_headers_kwargs(self, kwargs) -> Mapping[str, Any]:
         """Get the headers that should be added to a request in this dialog."""
+        via_hdr: hdr.ViaHeader = kwargs.pop("via_hdr", None) or self._client.generate_via_hdr()
+        if via_hdr.received is None and self._destination is not None:
+            received, rport = self._destination
+            via_hdr = dataclass_replace(via_hdr, received=received)
+            via_hdr.rport = rport
         return dict(
             from_address=kwargs.pop("from_address", self._from_address),
             from_tag=kwargs.pop("from_tag", self._from_tag),
             to_address=kwargs.pop("to_address", self._to_address),
             to_tag=kwargs.pop("to_tag", self._to_tag),
             call_id=kwargs.pop("call_id", self._call_id),
+            via_hdr=via_hdr,
         )
 
     def _generate_request(self, method: SIPMethod, **kwargs) -> SIPRequest:
@@ -361,6 +384,7 @@ class SIPDialog(ABC):
             **self._dialog_headers_kwargs(kwargs),
             cseq=kwargs.pop("cseq", self._cseq),
             uri=kwargs.pop("uri", self._uri),
+            destination=kwargs.pop("destination", self._destination),
             **kwargs,
         )
 
@@ -1212,6 +1236,7 @@ class SIPClient:
         self._register_dialog: Optional[SIPRegistration] = None
 
         self._keep_alive_interval: float = keep_alive_interval
+        self._keep_alive_known_addresses: Set[Tuple[str, int]] = set()
 
         self._dialogs: MutableMapping[str, SIPDialog] = {}
         """Map of call IDs to SIP sessions."""
@@ -1571,17 +1596,25 @@ class SIPClient:
     # TODO: this must be a coro
     def send_msg(self, message: SIPMessage):
         message_raw: bytes = message.serialize()
-        self._send_bytes(message_raw)
+        self._send_bytes(message_raw, addr=message.destination or None)
 
-    def _send_bytes(self, data_raw: bytes, send_wait: bool = False):
+    def _send_bytes(
+        self,
+        data_raw: bytes,
+        addr: Optional[Tuple[str, int]] = None,
+        send_wait: bool = False,
+    ):
+        if not addr:
+            addr = self._server_addr
         with self._socket_lock:
             self._socket.setblocking(True)
             sent: int = 0
             while sent < len(data_raw):
-                sent += self._socket.sendto(data_raw[sent:], self._server_addr)
+                sent += self._socket.sendto(data_raw[sent:], addr)
                 if not send_wait:
                     break
             self._socket.setblocking(False)
+        self._keep_alive_known_addresses.add(addr)
 
     def _register(self):
         if self._register_dialog is not None:
@@ -1618,9 +1651,12 @@ class SIPClient:
         """Send a periodic UDP keepalive to the server, to keep NAT traversal open"""
         try:
             while True:
-                await asyncio.sleep(self._keep_alive_interval)
-                data = b"\x0d\x0a\x0d\x0a"
-                self._send_bytes(data, send_wait=True)
+                known_addresses = list(self._keep_alive_known_addresses)
+                for addr in known_addresses:
+                    sleep_time = self._keep_alive_interval / len(known_addresses)
+                    await asyncio.sleep(sleep_time)
+                    data = b"\x0d\x0a\x0d\x0a"
+                    self._send_bytes(data, addr=addr, send_wait=True)
         except asyncio.CancelledError:
             pass
 
@@ -1669,6 +1705,13 @@ class SIPClient:
         dialog = SIPOptions.from_request(self, message)
         await dialog.receive_message(message)
 
+    def generate_via_hdr(self):
+        return hdr.ViaHeader(
+            "SIP/2.0/UDP",
+            *self.own_addr_to_server,
+            branch=generate_via_branch(),
+        )
+
     def prepare_headers(
         self,
         *extra_headers: hdr.Header,
@@ -1695,12 +1738,7 @@ class SIPClient:
             call_id = generate_call_id(*self.local_addr)
 
         if via_hdr is None:
-            via_hdr = hdr.ViaHeader(
-                "SIP/2.0/UDP",
-                *self.own_addr_to_server,
-                branch=generate_via_branch(),
-                # TODO: rport? what is it even?
-            )
+            via_hdr = self.generate_via_hdr()
 
         if contact is None:
             contact = self.contact
@@ -1733,6 +1771,7 @@ class SIPClient:
         call_id: str,
         cseq: int,
         cseq_method: Optional[SIPMethod] = None,
+        via_hdr: Optional[hdr.ViaHeader] = None,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1740,6 +1779,8 @@ class SIPClient:
         content_type: Optional[str] = None,
         extra_headers: Sequence[hdr.Header] = (),
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ) -> SIPRequest:
         if uri is None:
             uri = self.contact_uri
@@ -1753,6 +1794,7 @@ class SIPClient:
             call_id=call_id,
             cseq=cseq,
             cseq_method=cseq_method,
+            via_hdr=via_hdr,
             contact=contact,
             from_tag=from_tag,
             to_tag=to_tag,
@@ -1766,6 +1808,8 @@ class SIPClient:
             uri=uri,
             headers=prepared_headers,
             body=body,
+            origin=origin,
+            destination=destination,
         )
 
     def generate_response(
@@ -1785,6 +1829,8 @@ class SIPClient:
         content_type: Optional[str] = None,
         extra_headers: Sequence[hdr.Header] = (),
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ) -> SIPResponse:
         prepared_headers: hdr.Headers = self.prepare_headers(
             *extra_headers,
@@ -1806,6 +1852,8 @@ class SIPClient:
             status=status,
             headers=prepared_headers,
             body=body,
+            origin=origin,
+            destination=destination,
         )
 
     def generate_response_from_request(
@@ -1830,13 +1878,9 @@ class SIPClient:
         set_from_request("cseq_method", "CSeq", "method")
         set_from_request("contact", "Contact", None)
 
-        via_hdr: hdr.ViaHeader = kwargs.pop("via_hdr")
-        if via_hdr.received is None and request.origin is not None:
-            received, rport = request.origin
-            via_hdr = dataclass_replace(via_hdr, received=received)
-            via_hdr.rport = rport
+        kwargs.setdefault("destination", request.origin)
 
-        return self.generate_response(status, via_hdr=via_hdr, **kwargs)
+        return self.generate_response(status, **kwargs)
 
     def generate_auth(
         self,

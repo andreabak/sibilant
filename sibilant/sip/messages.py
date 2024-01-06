@@ -571,7 +571,14 @@ _M = TypeVar("_M", bound="SIPMessage")
 
 
 class SIPMessage(ABC):
-    def __init__(self, version: str, headers: Headers, body: Optional[SupportsStr], origin: Optional[Tuple[str, int]] = None):
+    def __init__(
+        self,
+        version: str,
+        headers: Headers,
+        body: Optional[SupportsStr],
+        origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
+    ):
         if version not in SUPPORTED_SIP_VERSIONS:
             raise SIPUnsupportedVersion(f"Unsupported SIP version: {version}")
 
@@ -579,6 +586,7 @@ class SIPMessage(ABC):
         self.headers: Headers = headers
         self.body: Optional[SupportsStr] = body
         self.origin: Optional[Tuple[str, int]] = origin
+        self.destination: Optional[Tuple[str, int]] = destination
 
         self.sdp: Optional[SDPSession] = (
             self.body if isinstance(self.body, SDPSession) else None
@@ -658,8 +666,9 @@ class SIPRequest(SIPMessage):
         headers: Optional[Headers] = None,
         body: Optional[SupportsStr] = None,
         origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ):
-        super().__init__(version, headers, body, origin=origin)
+        super().__init__(version, headers, body, origin=origin, destination=destination)
         self.method: SIPMethod = method
         self.uri: SIPURI = uri
 
@@ -689,8 +698,9 @@ class SIPResponse(SIPMessage):
         headers: Optional[Headers] = None,
         body: Optional[SupportsStr] = None,
         origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ):
-        super().__init__(version, headers, body, origin=origin)
+        super().__init__(version, headers, body, origin=origin, destination=destination)
         self.status: SIPStatus = status
 
     @property
