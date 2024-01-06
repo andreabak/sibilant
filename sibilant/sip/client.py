@@ -1392,7 +1392,12 @@ class SIPClient:
         if call_id is None:
             assert dialog is not None
             call_id = dialog.call_id
-        del self._dialogs[call_id]
+        if call_id not in self._dialogs:
+            _logger.warning(
+                f"Call ID {call_id} not found in tracked dialogs"
+            )  # TODO: debug?
+        else:
+            del self._dialogs[call_id]
 
     def start(self):
         try:
