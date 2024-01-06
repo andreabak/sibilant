@@ -1189,6 +1189,7 @@ class SIPClient:
         register_expires: int = 3600,
         default_response_timeout: float = 32.0,
         max_forwards: int = 70,
+        keep_alive_interval: float = 5.0,
     ):
         self.call_handler_factory: CallHandlerFactory = call_handler_factory
 
@@ -1209,6 +1210,8 @@ class SIPClient:
         self._register_timeout: float = register_timeout
         self._register_expires: int = register_expires
         self._register_dialog: Optional[SIPRegistration] = None
+
+        self._keep_alive_interval: float = keep_alive_interval
 
         self._dialogs: MutableMapping[str, SIPDialog] = {}
         """Map of call IDs to SIP sessions."""
@@ -1568,9 +1571,16 @@ class SIPClient:
     # TODO: this must be a coro
     def send_msg(self, message: SIPMessage):
         message_raw: bytes = message.serialize()
+        self._send_bytes(message_raw)
+
+    def _send_bytes(self, data_raw: bytes, send_wait: bool = False):
         with self._socket_lock:
             self._socket.setblocking(True)
-            self._socket.sendto(message_raw, self._server_addr)
+            sent: int = 0
+            while sent < len(data_raw):
+                sent += self._socket.sendto(data_raw[sent:], self._server_addr)
+                if not send_wait:
+                    break
             self._socket.setblocking(False)
 
     def _register(self):
@@ -1581,6 +1591,8 @@ class SIPClient:
 
         self.schedule(self._register_dialog.register()).result()  # wait
         _logger.debug(f"Registered with {self.server_host} with user {self._username}")
+
+        self.schedule(self._udp_keep_alive())
 
     def _deregister(self):
         if self._register_dialog is None:
@@ -1601,6 +1613,16 @@ class SIPClient:
             *(dialog.terminate() for dialog in self._dialogs_except_register.values()),
             return_exceptions=True,
         )
+
+    async def _udp_keep_alive(self):
+        """Send a periodic UDP keepalive to the server, to keep NAT traversal open"""
+        try:
+            while True:
+                await asyncio.sleep(self._keep_alive_interval)
+                data = b"\x0d\x0a\x0d\x0a"
+                self._send_bytes(data, send_wait=True)
+        except asyncio.CancelledError:
+            pass
 
     # TODO: should this be async? or should it be blocking?
     def invite(
