@@ -362,26 +362,36 @@ class SIPDialog(ABC):
         await self._send_message(request)
         self._follow_cseq(request)
 
-    def _dialog_headers_kwargs(self, kwargs) -> Mapping[str, Any]:
+    def _dialog_headers_kwargs(
+        self,
+        kwargs: MutableMapping[str, Any],
+        add_via: bool = True,
+    ) -> Mapping[str, Any]:
         """Get the headers that should be added to a request in this dialog."""
-        via_hdr: hdr.ViaHeader = kwargs.pop("via_hdr", None) or self._client.generate_via_hdr()
-        if via_hdr.received is None and self._destination is not None:
-            received, rport = self._destination
-            via_hdr = dataclass_replace(via_hdr, received=received)
-            via_hdr.rport = rport
-        return dict(
+        dialog_hdrs = dict(
             from_address=kwargs.pop("from_address", self._from_address),
             from_tag=kwargs.pop("from_tag", self._from_tag),
             to_address=kwargs.pop("to_address", self._to_address),
             to_tag=kwargs.pop("to_tag", self._to_tag),
             call_id=kwargs.pop("call_id", self._call_id),
-            via_hdr=via_hdr,
         )
+        if add_via:
+            via_hdr: hdr.ViaHeader = (
+                kwargs.pop("via_hdr", None) or self._client.generate_via_hdr()
+            )
+            if via_hdr.received is None and self._destination is not None:
+                received, rport = self._destination
+                via_hdr = dataclass_replace(via_hdr, received=received)
+                via_hdr.rport = rport
+            dialog_hdrs["via_hdr"] = via_hdr
+        return dialog_hdrs
 
-    def _generate_request(self, method: SIPMethod, **kwargs) -> SIPRequest:
+    def _generate_request(
+        self, method: SIPMethod, add_via: bool = True, **kwargs
+    ) -> SIPRequest:
         return self._client.generate_request(
             method,
-            **self._dialog_headers_kwargs(kwargs),
+            **self._dialog_headers_kwargs(kwargs, add_via=add_via),
             cseq=kwargs.pop("cseq", self._cseq),
             uri=kwargs.pop("uri", self._uri),
             destination=kwargs.pop("destination", self._destination),
@@ -392,6 +402,7 @@ class SIPDialog(ABC):
         self, request: SIPRequest, status: SIPStatus, **kwargs
     ) -> SIPResponse:
         assert request.headers["Call-ID"].value == self._call_id
+        kwargs.setdefault("via_hdr", request.headers["Via"])
         return self._client.generate_response_from_request(
             request, status, **self._dialog_headers_kwargs(kwargs), **kwargs
         )
@@ -907,7 +918,7 @@ class SIPCall(SIPDialog):
         ) -> SIPRequest:
             nonlocal invite
             if invite is not None:  # clear previous transaction, reset
-                await self._send_ack(invite)
+                await self._send_ack(invite, copy_via=True)
                 self._from_tag = generate_tag()
                 self._to_tag = None
 
@@ -959,7 +970,7 @@ class SIPCall(SIPDialog):
                 if response.sdp is not None:
                     self._process_received_sdp(response)
 
-                await self._send_ack(invite)
+                await self._send_ack(invite, last_recv_msg=response)
 
                 self._state = CallState.ESTABLISHED
                 self._handler.establish_call(self)
@@ -1044,13 +1055,26 @@ class SIPCall(SIPDialog):
             body=self._generate_sdp_session(rtp_profiles_by_port, media_flow),
         )
 
-    def _ack_request(self, invite: SIPRequest) -> SIPRequest:
+    def _ack_request(
+        self,
+        invite: SIPRequest,
+        last_recv_msg: Optional[SIPMessage] = None,
+        copy_via: bool = False,
+        **kwargs,
+    ) -> SIPRequest:
         """Create an ACK request."""
         invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
         if invite_cseq is None:
             raise RuntimeError("INVITE request has no CSeq header")
+        via_hdr: hdr.ViaHeader = invite.headers.get("Via")
+        if copy_via and via_hdr is None:
+            raise RuntimeError("INVITE request has no Via header")
         return self._generate_request(
-            SIPMethod.ACK, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+            SIPMethod.ACK,
+            add_via=False,
+            cseq=invite_cseq.sequence,
+            cseq_method=SIPMethod.ACK,
+            via_hdr=via_hdr if copy_via else self._client.generate_via_hdr(),
         )
 
     def _cancel_request(self, invite: SIPRequest) -> SIPRequest:
@@ -1058,8 +1082,14 @@ class SIPCall(SIPDialog):
         invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
         if invite_cseq is None:
             raise RuntimeError("INVITE request has no CSeq header")
+        via_hdr: hdr.ViaHeader = invite.headers.get("Via")
+        if via_hdr is None:
+            raise RuntimeError("INVITE request has no Via header")
         return self._generate_request(
-            SIPMethod.CANCEL, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+            SIPMethod.CANCEL,
+            cseq=invite_cseq.sequence,
+            cseq_method=invite_cseq.method,
+            via_hdr=via_hdr,
         )
 
     def _ringing_response(self, request: SIPRequest) -> SIPResponse:
@@ -1114,8 +1144,17 @@ class SIPCall(SIPDialog):
         self._process_sent_sdp(invite_request)
         return invite_request
 
-    async def _send_ack(self, invite: SIPRequest) -> SIPRequest:
-        ack_request: SIPRequest = self._ack_request(invite)
+    async def _send_ack(
+        self,
+        invite: SIPRequest,
+        last_recv_msg: Optional[SIPMessage] = None,
+        copy_via: bool = False,
+    ) -> SIPRequest:
+        ack_request: SIPRequest = self._ack_request(
+            invite,
+            last_recv_msg=last_recv_msg,
+            copy_via=copy_via,
+        )
         await self._send_message(ack_request)
         return ack_request
 
