@@ -441,7 +441,7 @@ class SIPRegistration(SIPDialog):
             from_tag=generate_tag(),
         )
 
-        self._keep_alive_task: Optional[asyncio.Task] = None
+        self._reg_refresh_task: Optional[asyncio.Task] = None
         self._registered: bool = False
 
     @property
@@ -491,21 +491,21 @@ class SIPRegistration(SIPDialog):
 
         raise SIPException(f"Unexpected response for REGISTER: {response!r}")
 
-    async def _schedule_keep_alive(self):
-        await self._cancel_keep_alive()
-        keep_alive_interval: float = max(
+    async def _schedule_reg_refresh(self):
+        await self._cancel_reg_refresh()
+        reg_refresh_interval: float = max(
             0.0, self._client.register_expires - self._client.register_timeout
         )
-        self._keep_alive_task = asyncio.create_task(
-            call_later(keep_alive_interval, self.register()),
-            name=f"{self.__class__.__name__}.keep_alive-{id(self._client)} task",
+        self._reg_refresh_task = asyncio.create_task(
+            call_later(reg_refresh_interval, self.register()),
+            name=f"{self.__class__.__name__}.reg_refresh-{id(self._client)} task",
         )
-        self._client._pending_futures.append(self._keep_alive_task)
+        self._client._pending_futures.append(self._reg_refresh_task)
 
-    async def _cancel_keep_alive(self):
-        if self._keep_alive_task is not None:
-            await cancel_task_silent(self._keep_alive_task)
-            self._keep_alive_task = None
+    async def _cancel_reg_refresh(self):
+        if self._reg_refresh_task is not None:
+            await cancel_task_silent(self._reg_refresh_task)
+            self._reg_refresh_task = None
 
     async def register(self):
         try:
@@ -515,10 +515,10 @@ class SIPRegistration(SIPDialog):
             self._close()
             raise
         self._registered = True
-        await self._schedule_keep_alive()
+        await self._schedule_reg_refresh()
 
     async def deregister(self):
-        await self._cancel_keep_alive()
+        await self._cancel_reg_refresh()
         try:
             await self._register_transaction(deregister=True)
         finally:
@@ -1471,7 +1471,7 @@ class SIPClient:
                 and self._register_dialog is not None
                 and self._register_dialog.closed
             ):
-                _logger.error("Registration or keep-alive failed, stopping client")
+                _logger.error("Registration or refresh failed, stopping client")
                 terminate_asap = True
 
             await asyncio.sleep(1e-2)
