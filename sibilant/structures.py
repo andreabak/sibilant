@@ -23,7 +23,12 @@ UW = ALLOWED_SYMBOLS
 
 DISPLAY_NAME_PAT: str = r"(?P<display_name>[\"'][^\"']+[\"']|\S.*?)(?=\s*\<)"
 CONTACT_PAT: str = rf"(?P<user>[+\w{UW}]+)(?::(?P<password>[\w{UW}]+))?(?=@)"
-HOST_PAT: str = r"(?P<host>(?:\w+\.)*\w+)(?::(?P<port>\d+))?"
+IPv4_D_PAT: str = r"(?:1?\d{1,2}|2[0-4]\d|25[0-5])"
+IPv4_PAT: str = rf"(?:(?:{IPv4_D_PAT}\.){{3}}{IPv4_D_PAT})"
+DNS_LABEL_PAT: str = r"(?:[a-z0-9]([a-z-0-9-]{0,61}[a-z0-9])?)"
+FQDN_PAT: str = rf"(?:(?:{DNS_LABEL_PAT}\.)*{DNS_LABEL_PAT}\.?)"
+HOSTNAME_PAT: str = rf"(?P<hostname>{FQDN_PAT}|{IPv4_PAT})"
+HOST_PAT: str = rf"(?P<host>{HOSTNAME_PAT})(?::(?P<port>\d+))?"
 SCHEME_PAT: str = r"(?P<scheme>sips?)(?=:)"
 PARAMS_PAT: str = rf"(?P<params>(?:;[\w{UW}]+(?:=[\w{UW}]+)?)+)"
 HEADERS_PAT: str = rf"(?=\?)(?P<headers>(?:[?&][\w{UW}]+=[\w{UW}]+)+)"

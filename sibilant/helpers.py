@@ -466,8 +466,10 @@ def get_local_ip_for_dest(host):
 
 def get_external_ip_for_dest(host: str) -> str:
     """Get the IP address of the current machine relative to the given host."""
-    is_private = ipaddress.ip_address(host).is_private
+    # resolve host if it's not an IP address
+    host_ip = socket.gethostbyname(host)
+    is_private = ipaddress.ip_address(host_ip).is_private
     if is_private:
-        return get_local_ip_for_dest(host)
+        return get_local_ip_for_dest(host_ip)
     else:
         return get_public_ip()

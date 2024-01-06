@@ -81,7 +81,7 @@ def generate_call_id(local_host: str, local_port: Optional[int] = None) -> str:
 
 def generate_cseq() -> int:
     """Generate a random CSeq number for SIP requests."""
-    return random.randrange(0, 2**31)
+    return random.randrange(0, 2**15)
 
 
 async def discard_statuses(
@@ -199,6 +199,8 @@ class SIPDialog(ABC):
 
         self._call_id: str = call_id or generate_call_id(*self._client.local_addr)
         self._cseq: int = cseq if cseq is not None else generate_cseq()
+
+        self._cnonce: Optional[str] = None
 
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
         self._expecting_msg: bool = False
@@ -399,17 +401,23 @@ class SIPDialog(ABC):
             if not isinstance(response, SIPResponse):
                 raise SIPBadResponse(f"Unexpected response for {method}: {response!r}")
 
-            if response.status == SIPStatus.UNAUTHORIZED:
+            if response.status in (
+                SIPStatus.UNAUTHORIZED,
+                SIPStatus.PROXY_AUTHENTICATION_REQUIRED,
+            ):
+                is_proxy = response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED
+
                 nonce_changed = "nonce" in response.status.reason
                 if authorization is not None and not nonce_changed:
                     raise SIPAuthenticationError(
                         "Failed to authenticate with given credentials"
                     )
 
-                authorization = self._client.generate_auth(response)
-
-            elif response.status == SIPStatus.PROXY_AUTHENTICATION_REQUIRED:
-                raise SIPUnsupportedError("Proxy authentication not implemented")
+                authorization = self._client.generate_auth(
+                    response, is_proxy=is_proxy, cnonce=self._cnonce, nc=self._cseq
+                )
+                if not self._cnonce and authorization.cnonce:
+                    self._cnonce = authorization.cnonce
 
             else:
                 return request, response
@@ -1808,34 +1816,66 @@ class SIPClient:
 
         return self.generate_response(status, via_hdr=via_hdr, **kwargs)
 
-    def generate_auth(self, response: SIPResponse) -> Optional[hdr.AuthorizationHeader]:
-        auth_header: Optional[hdr.WWWAuthenticateHeader] = response.headers.get(
-            "WWW-Authenticate"
+    def generate_auth(
+        self,
+        response: SIPResponse,
+        is_proxy: bool = False,
+        cnonce: Optional[str] = None,
+        nc: Optional[int] = None,
+    ) -> Union[hdr.AuthorizationHeader, hdr.ProxyAuthorizationHeader, None]:
+        authenticate_hdr_name: str = (
+            "WWW-Authenticate" if not is_proxy else "Proxy-Authenticate"
         )
-        if auth_header is None:
-            raise SIPBadResponse("No WWW-Authenticate header in response")
-        realm = auth_header.realm
+        authenticate_hdr: Union[
+            hdr.WWWAuthenticateHeader, hdr.ProxyAuthenticateHeader, None
+        ] = response.headers.get(authenticate_hdr_name)
+        if authenticate_hdr is None:
+            raise SIPBadResponse(f"No {authenticate_hdr_name} header in response")
+        realm = authenticate_hdr.realm
         if not realm:
-            raise SIPBadResponse("No realm in WWW-Authenticate header")
-        nonce = auth_header.nonce
+            raise SIPBadResponse(f"No realm in {authenticate_hdr_name} header")
+        nonce = authenticate_hdr.nonce
         if not nonce:
-            raise SIPBadResponse("No nonce in WWW-Authenticate header")
+            raise SIPBadResponse(f"No nonce in {authenticate_hdr_name} header")
         method = response.headers.get("CSeq").method
+        qop = authenticate_hdr.qop
+        if qop and qop not in ("auth", "auth-int"):
+            raise NotImplementedError(
+                f"Unsupported qop={qop} in {authenticate_hdr_name} header"
+            )
+        if nc is None and (qop or cnonce is not None):
+            raise ValueError("cnonce and nc must be set together")
+        if isinstance(nc, int):
+            nc = f"{nc:08}"
 
         def digest(s: str) -> str:
             return hashlib.md5(s.encode("utf-8")).hexdigest()
 
         ha1 = digest(f"{self._login}:{realm}:{self._password}")
         ha2 = digest(f"{method}:{self._auth_uri}")
-        response = digest(f"{ha1}:{nonce}:{ha2}")
-        return hdr.AuthorizationHeader(
+        if qop:  # assumes already validated
+            qop = "auth"  # TODO: add auth-int support
+            if not cnonce:
+                cnonce = random.getrandbits(32).to_bytes(4, "big").hex()
+            response = digest(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+        else:
+            cnonce = None
+            response = digest(f"{ha1}:{nonce}:{ha2}")
+
+        authorization_hdr_params = dict(
             username=self._login,
             realm=realm,
             nonce=nonce,
+            qop=qop,
+            nc=nc,
+            cnonce=cnonce,
             uri=str(self._auth_uri),
             response=response,
             algorithm="MD5",
         )
+        if is_proxy:
+            return hdr.ProxyAuthorizationHeader(**authorization_hdr_params)
+        return hdr.AuthorizationHeader(**authorization_hdr_params)
 
     def generate_capabilities_headers(self) -> List[hdr.Header]:
         return [
