@@ -1075,6 +1075,7 @@ class SIPCall(SIPDialog):
             cseq=invite_cseq.sequence,
             cseq_method=SIPMethod.ACK,
             via_hdr=via_hdr if copy_via else self._client.generate_via_hdr(),
+            extra_headers=[self._client.generate_route_hdr(last_recv_msg or invite)],
         )
 
     def _cancel_request(self, invite: SIPRequest) -> SIPRequest:
@@ -1758,6 +1759,12 @@ class SIPClient:
         via_hdr.rport = True
         return via_hdr
 
+    def generate_route_hdr(self, message: SIPMessage) -> hdr.RouteHeader:
+        route: List[hdr.Contact] = []
+        if (record_route_hdr := message.headers.get("Record-Route")) is not None:
+            route = list(reversed(record_route_hdr.contacts))
+        return hdr.RouteHeader(route)
+
     def prepare_headers(
         self,
         *extra_headers: hdr.Header,
@@ -1923,6 +1930,12 @@ class SIPClient:
         set_from_request("cseq", "CSeq", "sequence")
         set_from_request("cseq_method", "CSeq", "method")
         set_from_request("contact", "Contact", None)
+
+        extra_headers: List[hdr.Header] = list(kwargs.pop("extra_headers", ()))
+        # check if "Route" is in extra_headers, if not, set it from the request
+        if not any(isinstance(h, hdr.RouteHeader) for h in extra_headers):
+            extra_headers.append(self.generate_route_hdr(request))
+        kwargs["extra_headers"] = tuple(extra_headers)
 
         kwargs.setdefault("destination", request.origin)
 

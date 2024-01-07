@@ -51,6 +51,8 @@ __all__ = [
     "ToHeader",
     "Contact",
     "ContactHeader",
+    "RouteHeader",
+    "RecordRouteHeader",
     "CallIDHeader",
     "CSeqHeader",
     "AllowHeader",
@@ -367,6 +369,16 @@ class ContactHeader(Header):
 
     def serialize(self) -> str:
         return ",".join(contact.serialize() for contact in self.contacts)
+
+
+@dataclass(slots=True)
+class RouteHeader(ContactHeader):
+    _name = "Route"
+
+
+@dataclass(slots=True)
+class RecordRouteHeader(RouteHeader):
+    _name = "Record-Route"
 
 
 @dataclass(slots=True)
