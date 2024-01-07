@@ -340,8 +340,8 @@ class SIPDialog(ABC):
         via_hdr: hdr.ViaHeader = message.headers.get("Via")
         if via_hdr is None:
             raise SIPBadMessage("Missing Via header")
-        if isinstance(via_hdr.rport, int) and not self._rport or replace:
-            self._rport = via_hdr.rport
+        if isinstance(via_hdr.first.rport, int) and not self._rport or replace:
+            self._rport = via_hdr.first.rport
         if not self._destination or replace:
             self._destination = message.origin
 
@@ -379,10 +379,12 @@ class SIPDialog(ABC):
             via_hdr: hdr.ViaHeader = (
                 kwargs.pop("via_hdr", None) or self._client.generate_via_hdr()
             )
-            if via_hdr.received is None and self._destination is not None:
+            via_entry = via_hdr.first
+            if via_entry.received is None and self._destination is not None:
                 received, rport = self._destination
-                via_hdr = dataclass_replace(via_hdr, received=received)
-                via_hdr.rport = rport
+                via_entry = dataclass_replace(via_entry, received=received)
+                via_entry.rport = rport
+                via_hdr = hdr.ViaHeader([via_entry, *via_hdr.entries[1:]])
             dialog_hdrs["via_hdr"] = via_hdr
         return dialog_hdrs
 
@@ -1778,13 +1780,13 @@ class SIPClient:
         await dialog.receive_message(message)
 
     def generate_via_hdr(self):
-        via_hdr = hdr.ViaHeader(
+        via_entry = hdr.ViaEntry(
             "SIP/2.0/UDP",
             *self.own_addr_to_server,
             branch=generate_via_branch(),
         )
-        via_hdr.rport = True
-        return via_hdr
+        via_entry.rport = True
+        return hdr.ViaHeader([via_entry])
 
     def generate_route_hdr(self, message: SIPMessage) -> hdr.RouteHeader:
         route: List[hdr.Contact] = []

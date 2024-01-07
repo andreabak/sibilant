@@ -2,9 +2,10 @@ import logging
 import re
 import socket
 import time
+import traceback
 from collections import defaultdict, namedtuple, deque
 from contextlib import contextmanager, nullcontext
-from typing import Mapping, Sequence, Optional
+from typing import Mapping, Sequence, Optional, Type
 
 import pytest
 
@@ -18,6 +19,7 @@ from sibilant.sip import (
     SIPCall,
     SIPMethod,
     Header,
+    MultipleValuesHeader,
     Headers,
     SIPRegistration,
     CallState,
@@ -26,6 +28,41 @@ from .conftest import MockServer, Dest
 
 
 _logger = logging.getLogger(__name__)
+
+
+class TestHeaders:
+    def test_multiple_values(self):
+        """Test that headers with multiple values are parsed correctly."""
+        support_mutliple_values_headers = [
+            "Accept",
+            "Accept-Encoding",
+            "Accept-Language",
+            "Call-Info",
+            "Allow",
+            "Contact",
+            "Content-Encoding",
+            "Content-Language",
+            "Error-Info",
+            "In-Reply-To",
+            "Proxy-Require",
+            "Record-Route",
+            "Require",
+            "Route",
+            "Supported",
+            "Unsupported",
+            "Via",
+            "Warning",
+        ]
+        wrong_classes = []
+        for header_name in support_mutliple_values_headers:
+            try:
+                header_cls = Header.__registry_get_class_for__(header_name)
+            except KeyError:
+                _logger.info(f"Header {header_name} not implemented yet")
+            else:
+                if not issubclass(header_cls, MultipleValuesHeader):
+                    wrong_classes.append(header_name)
+        assert not wrong_classes, "Headers with multiple values should be MultipleValuesHeader"
 
 
 class TestSIPMessages:
@@ -68,8 +105,6 @@ class TestSIPMessages:
                 s = re.sub(r"(\w+) *(?=<sip:)", r'"\1" ', s)
                 # strip leading and trailing whitespace in each line
                 s = re.sub(r"^ +| +$", "", s, flags=re.M)
-                # remove extra Via headers
-                s = re.sub(r"^(Via:.*\r\n)(?:Via:.*\r\n)+", r"\1", s)
                 return s.strip()
 
             assert clean(str(headers)) == clean(
@@ -202,9 +237,8 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
 
         message = packet.message
 
-        if (
-            self.last_recv_msg is not None
-            and isinstance(self.last_recv_msg, SIPRequest)
+        if self.last_recv_msg is not None and isinstance(
+            self.last_recv_msg, SIPRequest
         ):
             # adapt transaction ID, cseq, from and to
             message.headers["Call-ID"] = self.last_recv_msg.headers["Call-ID"]
@@ -241,7 +275,7 @@ class TestCallHandler:
     @property
     def can_make_calls(self) -> bool:
         return True
-    
+
     def prepare_call(self, call: SIPCall) -> None:
         pass
 
@@ -363,6 +397,7 @@ class TestSIPClient:
                     and expect_failure
                 ), (
                     f"SIP client failed with unexpected {exc_info.type}: {exc_info.value}"
+                    f"\n{traceback.format_tb(exc_info.tb)}"
                     f"\nlast sent message: {server.last_sent_msg!r}"
                     f"\nlast received message: {server.last_recv_msg!r}"
                 )

@@ -427,7 +427,7 @@ class ListValueMixin:
         return dict(values=values, raw_value=raw_value)
 
     def serialize(self) -> str:
-        return self.raw_value
+        return self.raw_value or self._separator.join(self.values)
 
 
 def time_cache(expiry: float, maxsize: int = 1, typed: bool = False):
