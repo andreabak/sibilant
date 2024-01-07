@@ -1965,8 +1965,11 @@ class SIPClient:
 
         extra_headers: List[hdr.Header] = list(kwargs.pop("extra_headers", ()))
         # check if "Route" is in extra_headers, if not, set it from the request
-        if not any(isinstance(h, hdr.RouteHeader) for h in extra_headers):
-            extra_headers.append(self.generate_route_hdr(request))
+        # FIXME: apparently this should not happen. Instead we should echo the Record-Route headers
+        # if not any(isinstance(h, hdr.RouteHeader) for h in extra_headers):
+        #     extra_headers.append(self.generate_route_hdr(request))
+        if record_route_hdr := request.headers.get("Record-Route"):
+            extra_headers.append(record_route_hdr)
         kwargs["extra_headers"] = tuple(extra_headers)
 
         kwargs.setdefault("destination", request.origin)
