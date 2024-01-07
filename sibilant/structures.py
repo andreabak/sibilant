@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import field as dataclass_field
+from dataclasses import field as dataclass_field, replace as dataclass_replace
 from typing import Optional, Match, Collection, Dict, Mapping, TYPE_CHECKING
 
 try:
@@ -60,15 +60,21 @@ class SIPURI:
     params: Mapping[str, Optional[str]] = dataclass_field(default_factory=frozendict)
     headers: Mapping[str, str] = dataclass_field(default_factory=frozendict)
 
+    brackets: bool = False
+
     @classmethod
-    def parse(cls, value: str) -> SIPURI:
+    def parse(cls, value: str, force_brackets: Optional[bool] = None) -> SIPURI:
         """Parse a SIP URI"""
         match: Optional[Match] = None
         for uri_pat in URI_PATS:
-            if match := re.fullmatch(uri_pat, value):
+            if match := re.fullmatch(uri_pat, value.strip()):
                 break
         if match is None:
             raise SIPParseError(f"Invalid SIP URI: {value}")
+        if force_brackets is None:
+            brackets = value.strip().startswith("<") and value.strip().endswith(">")
+        else:
+            brackets = force_brackets
         params: Dict[str, Optional[str]] = {}
         if params_raw := match.group("params"):
             params = {
@@ -95,9 +101,10 @@ class SIPURI:
             scheme=match.group("scheme") or DEFAULT_SCHEME,
             params=frozendict(params),
             headers=frozendict(headers),
+            brackets=brackets,
         )
 
-    def __str__(self) -> str:
+    def serialize(self, force_brackets: Optional[bool] = None) -> str:
         password: str = f":{self.password}" if self.password else ""
         login: str = f"{self.user}{password}@" if self.user else ""
         hostname: str = f"{self.host}:{self.port}" if self.port else self.host
@@ -105,7 +112,14 @@ class SIPURI:
         headers: str = "".join(
             f"?{name}={value}" for name, value in self.headers.items()
         )
-        return f"{self.scheme}:" + login + hostname + params + headers
+        brackets: bool = self.brackets if force_brackets is None else force_brackets
+        uri: str = f"{self.scheme}:" + login + hostname + params + headers
+        if brackets:
+            uri = f"<{uri}>"
+        return uri
+
+    def __str__(self) -> str:
+        return self.serialize()
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,8 +129,6 @@ class SIPAddress:
     uri: SIPURI
     display_name: Optional[str] = None
 
-    force_brackets: bool = False
-
     @classmethod
     def parse(cls, value: str, force_brackets: Optional[bool] = None) -> Self:
         """Parse a SIP address from a string. Optionally with a display name and phone number."""
@@ -125,21 +137,21 @@ class SIPAddress:
             if match := re.fullmatch(address_pat, value):
                 break
         match_groups: Dict[str, str] = (match and match.groupdict()) or {}
+        display_name = match_groups.get("display_name")
+        if display_name and display_name[0] in ("'", '"'):
+            display_name = re.sub(r"^\s*([\"'])(.*?)\1\s*$", r"\2", display_name)
         uri_raw: Optional[str] = (match and match_groups.get("uri")) or None
         if not match or not uri_raw:
             raise SIPParseError(f"Invalid SIP address: {value}")
         assert uri_raw is not None
-        uri: SIPURI = SIPURI.parse(uri_raw)
-        display_name = match_groups.get("display_name")
-        if display_name and display_name[0] in ("'", '"'):
-            display_name = re.sub(r"^\s*([\"'])(.*?)\1\s*$", r"\2", display_name)
         if force_brackets is None:
-            force_brackets = bool(display_name)
-        return cls(uri=uri, display_name=display_name, force_brackets=force_brackets)
+            force_brackets = bool(match_groups)
+        uri: SIPURI = SIPURI.parse(uri_raw, force_brackets=force_brackets)
+        return cls(uri=uri, display_name=display_name)
 
     def __str__(self) -> str:
         """Serialize the SIP address to a string."""
-        result: str = f"<{self.uri}>" if self.force_brackets or self.display_name else str(self.uri)
         if self.display_name:
-            result = f'"{self.display_name}" {result}'
-        return result
+            return f'"{self.display_name}" {self.uri.serialize(force_brackets=True)}'
+        else:
+            return str(self.uri)

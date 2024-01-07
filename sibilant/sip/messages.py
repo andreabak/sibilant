@@ -674,7 +674,7 @@ class SIPRequest(SIPMessage):
 
     @property
     def start_line(self) -> str:
-        return f"{self.method} {self.uri} {self.version}"
+        return f"{self.method} {self.uri.serialize(force_brackets=False)} {self.version}"
 
     @classmethod
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
