@@ -108,7 +108,10 @@ class SIPURI:
         password: str = f":{self.password}" if self.password else ""
         login: str = f"{self.user}{password}@" if self.user else ""
         hostname: str = f"{self.host}:{self.port}" if self.port else self.host
-        params: str = "".join(f";{name}={value}" for name, value in self.params.items())
+        params: str = "".join(
+            f";{name}={value}" if value is not None else f";{name}"
+            for name, value in self.params.items()
+        )
         headers: str = "".join(
             f"?{name}={value}" for name, value in self.headers.items()
         )
