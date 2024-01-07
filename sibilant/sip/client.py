@@ -974,7 +974,22 @@ class SIPCall(SIPDialog):
                 if response.sdp is not None:
                     self._process_received_sdp(response)
 
-                await self._send_ack(invite, last_recv_msg=response)
+                # process target refresh, if any
+                ack_uri: SIPURI = self._uri
+                if (ok_contact := response.headers.get("Contact")) is not None:
+                    assert isinstance(ok_contact, hdr.ContactHeader)
+                    if len(ok_contact.contacts) > 1:
+                        raise SIPBadResponse(
+                            f"Unexpected multiple contacts in 200 OK: {ok_contact!r}"
+                        )
+                    ok_contact_uri: SIPURI = ok_contact.contacts[0].address.uri
+                    # FIXME: doing this breaks the transaction, the URI should be changed only in ACK
+                    #        but then what should we do to correctly do target refresh?
+                    # if ok_contact_uri != self._uri:
+                    #     self._uri = ok_contact_uri
+                    ack_uri = ok_contact_uri
+
+                await self._send_ack(invite, last_recv_msg=response, uri=ack_uri)
 
                 self._state = CallState.ESTABLISHED
                 self._handler.establish_call(self)
@@ -1080,6 +1095,7 @@ class SIPCall(SIPDialog):
             cseq=invite_cseq.sequence,
             cseq_method=SIPMethod.ACK,
             via_hdr=via_hdr if copy_via else self._client.generate_via_hdr(),
+            **kwargs,
             extra_headers=[self._client.generate_route_hdr(last_recv_msg or invite)],
         )
 
@@ -1155,11 +1171,13 @@ class SIPCall(SIPDialog):
         invite: SIPRequest,
         last_recv_msg: Optional[SIPMessage] = None,
         copy_via: bool = False,
+        **kwargs,
     ) -> SIPRequest:
         ack_request: SIPRequest = self._ack_request(
             invite,
             last_recv_msg=last_recv_msg,
             copy_via=copy_via,
+            **kwargs,
         )
         await self._send_message(ack_request)
         return ack_request
