@@ -20,20 +20,24 @@ if TYPE_CHECKING:
 
 DEFAULT_SCHEME: str = "sip"
 
-ALLOWED_SYMBOLS: str = r"_.!~*'()%\-"
-UW = ALLOWED_SYMBOLS
+UNRESERVED_C: str = r"_.!~*'()%\-"
+USER_C: str = rf"[\w{UNRESERVED_C}+\-&$,;?/]"
+PWD_C: str = rf"[\w{UNRESERVED_C}+\-&$,]"
+PARAM_C: str = rf"[\w{UNRESERVED_C}\[\]/:&+$]"
+HEADER_C: str = rf"[\w{UNRESERVED_C}\[\]/:?+$]"
 
 DISPLAY_NAME_PAT: str = r"(?P<display_name>[\"'][^\"']+[\"']|\S.*?)(?=\s*\<)"
-CONTACT_PAT: str = rf"(?P<user>[+\w{UW}]+)(?::(?P<password>[\w{UW}]+))?(?=@)"
+CONTACT_PAT: str = rf"(?P<user>{USER_C}+)(?::(?P<password>{PWD_C}+))?(?=@)"
 IPv4_D_PAT: str = r"(?:1?\d{1,2}|2[0-4]\d|25[0-5])"
 IPv4_PAT: str = rf"(?:(?:{IPv4_D_PAT}\.){{3}}{IPv4_D_PAT})"
+# FIXME: IPv6
 DNS_LABEL_PAT: str = r"(?i:[a-z0-9]([a-z-0-9-]{0,61}[a-z0-9])?)"
 FQDN_PAT: str = rf"(?:(?:{DNS_LABEL_PAT}\.)*{DNS_LABEL_PAT}\.?)"
 HOSTNAME_PAT: str = rf"(?P<hostname>{FQDN_PAT}|{IPv4_PAT})"
 HOST_PAT: str = rf"(?P<host>{HOSTNAME_PAT})(?::(?P<port>\d+))?"
 SCHEME_PAT: str = r"(?P<scheme>sips?)(?=:)"
-PARAMS_PAT: str = rf"(?P<params>(?:;[\w{UW}]+(?:=[\w{UW}]+)?)+)"
-HEADERS_PAT: str = rf"(?=\?)(?P<headers>(?:[?&][\w{UW}]+=[\w{UW}]+)+)"
+PARAMS_PAT: str = rf"(?P<params>(?:;{PARAM_C}+(?:={PARAM_C}+)?)+)"
+HEADERS_PAT: str = rf"(?=\?)(?P<headers>(?:[?&]{USER_C}+={USER_C}+)+)"
 URI_PART_PAT: str = (
     rf"(?:{SCHEME_PAT}:)?(?:{CONTACT_PAT}@)?{HOST_PAT}"
     rf"(?:{PARAMS_PAT})?(?:{HEADERS_PAT})?"
