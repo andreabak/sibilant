@@ -182,15 +182,19 @@ class ViaHeader(Header):
 
     @property
     def rport(self) -> Union[bool, int, None]:
-        if self.extension and "rport" not in self.extension:
+        if self.extension and "rport" in self.extension:
             return int(self.extension["rport"]) if self.extension["rport"] else True
         return None
 
     @rport.setter
     def rport(self, value: Union[bool, int, None]) -> None:
-        if value is None:
+        if not value:
             self.extension.pop("rport", None)
-        self.extension["rport"] = str(value) if isinstance(value, int) else None
+        elif isinstance(value, bool):
+            self.extension["rport"] = None
+        else:
+            assert isinstance(value, int)
+            self.extension["rport"] = str(value)
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:

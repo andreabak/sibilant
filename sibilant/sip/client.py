@@ -1750,11 +1750,13 @@ class SIPClient:
         await dialog.receive_message(message)
 
     def generate_via_hdr(self):
-        return hdr.ViaHeader(
+        via_hdr = hdr.ViaHeader(
             "SIP/2.0/UDP",
             *self.own_addr_to_server,
             branch=generate_via_branch(),
         )
+        via_hdr.rport = True
+        return via_hdr
 
     def prepare_headers(
         self,
