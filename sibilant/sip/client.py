@@ -500,7 +500,11 @@ class SIPRegistration(SIPDialog):
 
         # TODO: allow-events ??
 
-        return self._generate_request(SIPMethod.REGISTER, extra_headers=extra_headers)
+        return self._generate_request(
+            SIPMethod.REGISTER,
+            is_initial=True,
+            extra_headers=extra_headers,
+        )
 
     async def _register_transaction(self, deregister: bool = False) -> None:
         async def sender(
@@ -1051,6 +1055,7 @@ class SIPCall(SIPDialog):
         """Create an INVITE request."""
         return self._generate_request(
             SIPMethod.INVITE,
+            is_initial=True,
             extra_headers=[authorization] if authorization else [],
             body=self._generate_sdp_session(rtp_profiles_by_port, media_flow),
         )
@@ -1364,6 +1369,10 @@ class SIPClient:
                 uri=dataclass_replace(self.contact_uri, params={"transport": "UDP"}),
             ),
         )
+
+    @property
+    def user_agent(self) -> str:
+        return f"{sibilant.__title__}/{sibilant.__version__}"
 
     @property
     def register_attempts(self) -> int:
@@ -1774,6 +1783,7 @@ class SIPClient:
         cseq: int,
         cseq_method: SIPMethod,
         via_hdr: Optional[hdr.ViaHeader] = None,
+        is_initial: bool = False,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1793,7 +1803,7 @@ class SIPClient:
         if via_hdr is None:
             via_hdr = self.generate_via_hdr()
 
-        if contact is None:
+        if is_initial and contact is None:
             contact = self.contact
 
         extra_headers = list(extra_headers)
@@ -1806,9 +1816,9 @@ class SIPClient:
             hdr.ToHeader(to_address, tag=to_tag),
             hdr.CallIDHeader(call_id),
             hdr.CSeqHeader(cseq, cseq_method),
-            hdr.ContactHeader([contact]),
+            *([hdr.ContactHeader([contact])] if contact else ()),
             hdr.MaxForwardsHeader(self._max_forwards),
-            hdr.UserAgentHeader(f"{sibilant.__title__}/{sibilant.__version__}"),
+            *([hdr.UserAgentHeader(self.user_agent)] if is_initial else ()),
             *extra_headers,
             *([hdr.ContentTypeHeader(content_type)] if content_type else ()),
             hdr.ContentLengthHeader((body and len(str(body).encode())) or 0),
@@ -1825,6 +1835,7 @@ class SIPClient:
         cseq: int,
         cseq_method: Optional[SIPMethod] = None,
         via_hdr: Optional[hdr.ViaHeader] = None,
+        is_initial: bool = False,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1848,6 +1859,7 @@ class SIPClient:
             cseq=cseq,
             cseq_method=cseq_method,
             via_hdr=via_hdr,
+            is_initial=is_initial,
             contact=contact,
             from_tag=from_tag,
             to_tag=to_tag,
