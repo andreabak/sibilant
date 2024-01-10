@@ -3,11 +3,7 @@ from __future__ import annotations
 import re
 from abc import ABC
 from typing import Optional, List, TYPE_CHECKING
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from ..exceptions import SDPParseError
 from ..helpers import dataclass

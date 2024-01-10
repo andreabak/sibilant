@@ -18,11 +18,7 @@ from typing import (
     Tuple,
     Sequence,
 )
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from ..helpers import (
     CaseInsensitiveDict,

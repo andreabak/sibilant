@@ -15,12 +15,7 @@ from typing import (
     Type,
     Callable,
 )
-
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 import numpy as np
 from cbitstruct import CompiledFormat

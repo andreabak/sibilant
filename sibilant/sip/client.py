@@ -34,10 +34,7 @@ from typing import (
     Protocol,
 )
 
-try:
-    from typing import Self, runtime_checkable
-except ImportError:
-    from typing_extensions import Self, runtime_checkable
+from typing_extensions import Self, runtime_checkable
 
 import sibilant
 from .. import sdp, rtp

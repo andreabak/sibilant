@@ -3,11 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import field as dataclass_field, replace as dataclass_replace
 from typing import Optional, Match, Collection, Dict, Mapping, TYPE_CHECKING
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from frozendict import frozendict
 

@@ -3,12 +3,7 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import field as dataclass_field
 from typing import Dict, Optional, List, TYPE_CHECKING
-
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from ..exceptions import SDPParseError
 from ..helpers import dataclass, IntValueMixin

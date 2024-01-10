@@ -4,11 +4,6 @@ import re
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, TYPE_CHECKING, TypeVar, Tuple
 
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
-
 from ..helpers import AutoFieldsEnum, SupportsStr
 from ..constants import SUPPORTED_SIP_VERSIONS
 from ..exceptions import SIPUnsupportedVersion, SIPParseError, SIPUnsupportedError
