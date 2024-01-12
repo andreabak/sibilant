@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from dataclasses import fields as dataclass_fields, field as dataclass_field
+from collections import defaultdict
+from dataclasses import fields as dataclass_fields, field as dataclass_field, InitVar
 from typing import (
     ClassVar,
     Union,
@@ -15,12 +16,9 @@ from typing import (
     List,
     Set,
     Tuple,
+    Sequence,
 )
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from ..helpers import (
     CaseInsensitiveDict,
@@ -45,12 +43,16 @@ __all__ = [
     "UnknownHeader",
     "IntHeader",
     "ListHeader",
+    "MultipleValuesHeader",
+    "ViaEntry",
     "ViaHeader",
     "FromToHeader",
     "FromHeader",
     "ToHeader",
     "Contact",
     "ContactHeader",
+    "RouteHeader",
+    "RecordRouteHeader",
     "CallIDHeader",
     "CSeqHeader",
     "AllowHeader",
@@ -90,12 +92,14 @@ class Header(
         return self.serialize()
 
     @classmethod
-    def parse(cls, header: str, value: str, previous_headers: Headers) -> Self:
+    def parse(
+        cls, header: str, values: Union[str, List[str]], previous_headers: Headers
+    ) -> Self:
         """
         Parse a raw header into a header object, picking the correct class.
 
         :param header: the header name
-        :param value: the raw value of the header
+        :param values: the raw values of the header
         :param previous_headers: the previous headers that have been already parsed
         :return: the new header object
         """
@@ -107,6 +111,17 @@ class Header(
         header_cls: Type[Header] = cls.__registry_get_class_for__(
             header if known_header else DEFAULT
         )
+        if isinstance(values, str):
+            values = [values]
+        assert values, "At least one value must be present"
+        if len(values) > 1:
+            if not issubclass(header_cls, MultipleValuesHeader):
+                raise SIPParseError(
+                    f"Multiple values for header {header}, but header is not a MultipleValuesHeader"
+                )
+            value = ListHeader._separator.join(values)
+        else:
+            value = values[0]
         return header_cls.from_raw_value(header, value, previous_headers)
 
     @classmethod
@@ -165,10 +180,17 @@ class ListHeader(ListValueMixin, Header, ABC):
         return cls(**cls.parse_raw_value(value))
 
 
-@dataclass(slots=True)
-class ViaHeader(Header):
-    _name = "Via"
+class MultipleValuesHeader(ListHeader, ABC):
+    _prefers_separate_lines: ClassVar[bool] = False
 
+    def __str__(self) -> str:
+        if self._prefers_separate_lines:
+            return "\r\n".join(f"{self.name}: {value}" for value in self.values)
+        return f"{self.name}: {self._separator.join(self.values)}"
+
+
+@dataclass(slots=True)
+class ViaEntry:
     method: str
     address: str
     port: Optional[int]
@@ -182,22 +204,22 @@ class ViaHeader(Header):
 
     @property
     def rport(self) -> Union[bool, int, None]:
-        if self.extension and "rport" not in self.extension:
+        if self.extension and "rport" in self.extension:
             return int(self.extension["rport"]) if self.extension["rport"] else True
         return None
 
     @rport.setter
     def rport(self, value: Union[bool, int, None]) -> None:
-        if value is None:
+        if not value:
             self.extension.pop("rport", None)
-        self.extension["rport"] = str(value) if isinstance(value, int) else None
+        elif isinstance(value, bool):
+            self.extension["rport"] = None
+        else:
+            assert isinstance(value, int)
+            self.extension["rport"] = str(value)
 
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        # ignore if there already is a via header
-        if "Via" in previous_headers:
-            return previous_headers["Via"]
-
+    def parse(cls, value: str) -> Self:
         method, address, *params = re.split(r"\s+|\s*;\s*", value.strip())
 
         ip, port_str = address.split(":") if ":" in address else (address, None)
@@ -245,6 +267,36 @@ class ViaHeader(Header):
             for param_name, param_value in (sorted_params.items())
         ]
         return f"{self.method} {host}{''.join(params)}"
+
+
+@dataclass(slots=True)
+class ViaHeader(MultipleValuesHeader):
+    _name = "Via"
+    _prefers_separate_lines = True
+
+    _entries: List[ViaEntry] = dataclass_field(default_factory=list)
+
+    @property
+    def entries(self) -> List[ViaEntry]:
+        return self._entries
+
+    @entries.setter
+    def entries(self, value: List[ViaEntry]) -> None:
+        assert all(isinstance(entry, ViaEntry) for entry in value)
+        self._entries = list(value)
+        self.values = [entry.serialize() for entry in value]
+
+    @property
+    def first(self) -> ViaEntry:
+        return self.entries[0]
+
+    def __post_init__(self):
+        self.entries = [
+            ViaEntry.parse(value) if isinstance(value, str) else value
+            for value in self.values
+        ]
+        if not self._entries:
+            raise SIPParseError("Via header must have at least one entry")
 
 
 @dataclass
@@ -345,7 +397,7 @@ class Contact:
 
 
 @dataclass(slots=True)
-class ContactHeader(Header):
+class ContactHeader(MultipleValuesHeader):
     """
     Implements a SIP Contact header as described in :rfc:`3261#section-20.10`.
     Multiple contacts might be present in a single header, separated by commas.
@@ -353,16 +405,38 @@ class ContactHeader(Header):
 
     _name = "Contact"
 
-    contacts: List[Contact]
+    _contacts: List[Contact] = dataclass_field(default_factory=list)
+    # TODO: * contact (see RFC?)
 
-    @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        # TODO: check if we might encounter commas that do not represent multiple contacts
-        contacts = [Contact.parse(contact) for contact in re.split(r"\s*,\s*", value)]
-        return cls(contacts=contacts)
+    @property
+    def contacts(self) -> List[Contact]:
+        return self._contacts
 
-    def serialize(self) -> str:
-        return ",".join(contact.serialize() for contact in self.contacts)
+    @contacts.setter
+    def contacts(self, value: List[Contact]) -> None:
+        assert all(isinstance(contact, Contact) for contact in value)
+        self._contacts = value
+        self.values = [contact.serialize() for contact in value]
+
+    @property
+    def contact(self) -> Contact:
+        return self.contacts[0]
+
+    def __post_init__(self):
+        self.contacts = [
+            Contact.parse(value) if isinstance(value, str) else value
+            for value in self.values
+        ]
+
+
+@dataclass(slots=True)
+class RouteHeader(ContactHeader):
+    _name = "Route"
+
+
+@dataclass(slots=True)
+class RecordRouteHeader(RouteHeader):
+    _name = "Record-Route"
 
 
 @dataclass(slots=True)
@@ -390,17 +464,17 @@ class CSeqHeader(Header):
 
 
 @dataclass(slots=True)
-class AllowHeader(ListHeader):
+class AllowHeader(MultipleValuesHeader):
     _name = "Allow"
 
 
 @dataclass(slots=True)
-class AcceptHeader(ListHeader):
+class AcceptHeader(MultipleValuesHeader):
     _name = "Accept"
 
 
 @dataclass(slots=True)
-class SupportedHeader(ListHeader):
+class SupportedHeader(MultipleValuesHeader):
     _name = "Supported"
 
 
@@ -537,10 +611,13 @@ class Headers(CaseInsensitiveDict[_H]):
         headers: Headers = cls()
 
         header_lines = raw_headers.decode("utf-8").split("\r\n")
+        headers_values = defaultdict(list)
         for line in header_lines:
             header, raw_value = line.split(": ", maxsplit=1)
-            # TODO: better handle, or warn, about duplicate headers
-            headers[header] = Header.parse(header, raw_value, headers)
+            headers_values[header].append(raw_value)
+
+        for header, raw_values in headers_values.items():
+            headers[header] = Header.parse(header, raw_values, headers)
 
         return headers
 

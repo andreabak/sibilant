@@ -4,11 +4,7 @@ import logging
 from abc import ABC
 from dataclasses import field as dataclass_field
 from typing import Dict, Optional, List, Any, MutableMapping, TYPE_CHECKING, Tuple
-
-try:
-    from typing import Self
-except ImportError:
-    from typing_extensions import Self
+from typing_extensions import Self
 
 from ..rtp import MediaFlowType
 from ..constants import SUPPORTED_SDP_VERSIONS

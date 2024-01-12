@@ -34,10 +34,7 @@ from typing import (
     Protocol,
 )
 
-try:
-    from typing import Self, runtime_checkable
-except ImportError:
-    from typing_extensions import Self, runtime_checkable
+from typing_extensions import Self, runtime_checkable
 
 import sibilant
 from .. import sdp, rtp
@@ -200,6 +197,9 @@ class SIPDialog(ABC):
         self._call_id: str = call_id or generate_call_id(*self._client.local_addr)
         self._cseq: int = cseq if cseq is not None else generate_cseq()
 
+        self._rport: Optional[int] = None
+        self._destination: Optional[Tuple[str, int]] = None
+
         self._cnonce: Optional[str] = None
 
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
@@ -293,6 +293,7 @@ class SIPDialog(ABC):
 
         else:
             # We're not expecting anything, try to handle the message
+            self._store_sender(message, replace=False)
             await self._handle_message(message)
 
     @abstractmethod
@@ -324,9 +325,22 @@ class SIPDialog(ABC):
             msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
         self._expecting_msg = True
         try:
-            return await msg_getter()
+            message = await msg_getter()
+            self._store_sender(message)
+            return message
         finally:
             self._expecting_msg = False
+
+    def _store_sender(self, message: SIPMessage, replace: bool = True) -> None:
+        """Store sender information from origin and Via header of a received message"""
+        # TODO: make sure called only on received messages
+        via_hdr: hdr.ViaHeader = message.headers.get("Via")
+        if via_hdr is None:
+            raise SIPBadMessage("Missing Via header")
+        if isinstance(via_hdr.first.rport, int) and not self._rport or replace:
+            self._rport = via_hdr.first.rport
+        if not self._destination or replace:
+            self._destination = message.origin
 
     def _follow_cseq(self, request: SIPMessage) -> SIPMessage:
         """Set the internal CSeq to the one in the request and increment it."""
@@ -345,22 +359,41 @@ class SIPDialog(ABC):
         await self._send_message(request)
         self._follow_cseq(request)
 
-    def _dialog_headers_kwargs(self, kwargs) -> Mapping[str, Any]:
+    def _dialog_headers_kwargs(
+        self,
+        kwargs: MutableMapping[str, Any],
+        add_via: bool = True,
+    ) -> Mapping[str, Any]:
         """Get the headers that should be added to a request in this dialog."""
-        return dict(
+        dialog_hdrs = dict(
             from_address=kwargs.pop("from_address", self._from_address),
             from_tag=kwargs.pop("from_tag", self._from_tag),
             to_address=kwargs.pop("to_address", self._to_address),
             to_tag=kwargs.pop("to_tag", self._to_tag),
             call_id=kwargs.pop("call_id", self._call_id),
         )
+        if add_via:
+            via_hdr: hdr.ViaHeader = (
+                kwargs.pop("via_hdr", None) or self._client.generate_via_hdr()
+            )
+            via_entry = via_hdr.first
+            if via_entry.received is None and self._destination is not None:
+                received, rport = self._destination
+                via_entry = dataclass_replace(via_entry, received=received)
+                via_entry.rport = rport
+                via_hdr = hdr.ViaHeader([via_entry, *via_hdr.entries[1:]])
+            dialog_hdrs["via_hdr"] = via_hdr
+        return dialog_hdrs
 
-    def _generate_request(self, method: SIPMethod, **kwargs) -> SIPRequest:
+    def _generate_request(
+        self, method: SIPMethod, add_via: bool = True, **kwargs
+    ) -> SIPRequest:
         return self._client.generate_request(
             method,
-            **self._dialog_headers_kwargs(kwargs),
+            **self._dialog_headers_kwargs(kwargs, add_via=add_via),
             cseq=kwargs.pop("cseq", self._cseq),
             uri=kwargs.pop("uri", self._uri),
+            destination=kwargs.pop("destination", self._destination),
             **kwargs,
         )
 
@@ -368,6 +401,7 @@ class SIPDialog(ABC):
         self, request: SIPRequest, status: SIPStatus, **kwargs
     ) -> SIPResponse:
         assert request.headers["Call-ID"].value == self._call_id
+        kwargs.setdefault("via_hdr", request.headers["Via"])
         return self._client.generate_response_from_request(
             request, status, **self._dialog_headers_kwargs(kwargs), **kwargs
         )
@@ -436,12 +470,12 @@ class SIPRegistration(SIPDialog):
         super().__init__(
             client,
             uri=client.server_uri,
-            from_address=client.contact_address,
-            to_address=client.contact_address,
+            from_address=client.binding_address,
+            to_address=client.binding_address,
             from_tag=generate_tag(),
         )
 
-        self._keep_alive_task: Optional[asyncio.Task] = None
+        self._reg_refresh_task: Optional[asyncio.Task] = None
         self._registered: bool = False
 
     @property
@@ -465,7 +499,11 @@ class SIPRegistration(SIPDialog):
 
         # TODO: allow-events ??
 
-        return self._generate_request(SIPMethod.REGISTER, extra_headers=extra_headers)
+        return self._generate_request(
+            SIPMethod.REGISTER,
+            is_initial=True,
+            extra_headers=extra_headers,
+        )
 
     async def _register_transaction(self, deregister: bool = False) -> None:
         async def sender(
@@ -491,21 +529,21 @@ class SIPRegistration(SIPDialog):
 
         raise SIPException(f"Unexpected response for REGISTER: {response!r}")
 
-    async def _schedule_keep_alive(self):
-        await self._cancel_keep_alive()
-        keep_alive_interval: float = max(
+    async def _schedule_reg_refresh(self):
+        await self._cancel_reg_refresh()
+        reg_refresh_interval: float = max(
             0.0, self._client.register_expires - self._client.register_timeout
         )
-        self._keep_alive_task = asyncio.create_task(
-            call_later(keep_alive_interval, self.register()),
-            name=f"{self.__class__.__name__}.keep_alive-{id(self._client)} task",
+        self._reg_refresh_task = asyncio.create_task(
+            call_later(reg_refresh_interval, self.register()),
+            name=f"{self.__class__.__name__}.reg_refresh-{id(self._client)} task",
         )
-        self._client._pending_futures.append(self._keep_alive_task)
+        self._client._pending_futures.append(self._reg_refresh_task)
 
-    async def _cancel_keep_alive(self):
-        if self._keep_alive_task is not None:
-            await cancel_task_silent(self._keep_alive_task)
-            self._keep_alive_task = None
+    async def _cancel_reg_refresh(self):
+        if self._reg_refresh_task is not None:
+            await cancel_task_silent(self._reg_refresh_task)
+            self._reg_refresh_task = None
 
     async def register(self):
         try:
@@ -515,10 +553,10 @@ class SIPRegistration(SIPDialog):
             self._close()
             raise
         self._registered = True
-        await self._schedule_keep_alive()
+        await self._schedule_reg_refresh()
 
     async def deregister(self):
-        await self._cancel_keep_alive()
+        await self._cancel_reg_refresh()
         try:
             await self._register_transaction(deregister=True)
         finally:
@@ -627,7 +665,7 @@ class SIPCall(SIPDialog):
             else:
                 raise TypeError(f"Invalid type for 'from_header': {from_hdr!r}")
         elif from_address is None:
-            from_address = client.contact_address
+            from_address = client.binding_address
         assert from_address is not None
 
         if from_tag is None:
@@ -643,7 +681,7 @@ class SIPCall(SIPDialog):
         assert uri is not None
 
         if own_side is None:
-            if from_address == client.contact_address:
+            if from_address == client.binding_address:
                 own_side = CallSide.CALLER
             else:
                 own_side = CallSide.RECEIVER
@@ -883,7 +921,7 @@ class SIPCall(SIPDialog):
         ) -> SIPRequest:
             nonlocal invite
             if invite is not None:  # clear previous transaction, reset
-                await self._send_ack(invite)
+                await self._send_ack(invite, copy_via=True)
                 self._from_tag = generate_tag()
                 self._to_tag = None
 
@@ -935,7 +973,22 @@ class SIPCall(SIPDialog):
                 if response.sdp is not None:
                     self._process_received_sdp(response)
 
-                await self._send_ack(invite)
+                # process target refresh, if any
+                ack_uri: SIPURI = self._uri
+                if (ok_contact := response.headers.get("Contact")) is not None:
+                    assert isinstance(ok_contact, hdr.ContactHeader)
+                    if len(ok_contact.contacts) > 1:
+                        raise SIPBadResponse(
+                            f"Unexpected multiple contacts in 200 OK: {ok_contact!r}"
+                        )
+                    ok_contact_uri: SIPURI = ok_contact.contacts[0].address.uri
+                    # FIXME: doing this breaks the transaction, the URI should be changed only in ACK
+                    #        but then what should we do to correctly do target refresh?
+                    # if ok_contact_uri != self._uri:
+                    #     self._uri = ok_contact_uri
+                    ack_uri = ok_contact_uri
+
+                await self._send_ack(invite, last_recv_msg=response, uri=ack_uri)
 
                 self._state = CallState.ESTABLISHED
                 self._handler.establish_call(self)
@@ -1016,17 +1069,33 @@ class SIPCall(SIPDialog):
         """Create an INVITE request."""
         return self._generate_request(
             SIPMethod.INVITE,
+            is_initial=True,
             extra_headers=[authorization] if authorization else [],
             body=self._generate_sdp_session(rtp_profiles_by_port, media_flow),
         )
 
-    def _ack_request(self, invite: SIPRequest) -> SIPRequest:
+    def _ack_request(
+        self,
+        invite: SIPRequest,
+        last_recv_msg: Optional[SIPMessage] = None,
+        copy_via: bool = False,
+        **kwargs,
+    ) -> SIPRequest:
         """Create an ACK request."""
         invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
         if invite_cseq is None:
             raise RuntimeError("INVITE request has no CSeq header")
+        via_hdr: hdr.ViaHeader = invite.headers.get("Via")
+        if copy_via and via_hdr is None:
+            raise RuntimeError("INVITE request has no Via header")
         return self._generate_request(
-            SIPMethod.ACK, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+            SIPMethod.ACK,
+            add_via=False,
+            cseq=invite_cseq.sequence,
+            cseq_method=SIPMethod.ACK,
+            via_hdr=via_hdr if copy_via else self._client.generate_via_hdr(),
+            **kwargs,
+            extra_headers=[self._client.generate_route_hdr(last_recv_msg or invite)],
         )
 
     def _cancel_request(self, invite: SIPRequest) -> SIPRequest:
@@ -1034,8 +1103,14 @@ class SIPCall(SIPDialog):
         invite_cseq: hdr.CSeqHeader = invite.headers.get("CSeq")
         if invite_cseq is None:
             raise RuntimeError("INVITE request has no CSeq header")
+        via_hdr: hdr.ViaHeader = invite.headers.get("Via")
+        if via_hdr is None:
+            raise RuntimeError("INVITE request has no Via header")
         return self._generate_request(
-            SIPMethod.CANCEL, cseq=invite_cseq.sequence, cseq_method=invite_cseq.method
+            SIPMethod.CANCEL,
+            cseq=invite_cseq.sequence,
+            cseq_method=invite_cseq.method,
+            via_hdr=via_hdr,
         )
 
     def _ringing_response(self, request: SIPRequest) -> SIPResponse:
@@ -1090,8 +1165,19 @@ class SIPCall(SIPDialog):
         self._process_sent_sdp(invite_request)
         return invite_request
 
-    async def _send_ack(self, invite: SIPRequest) -> SIPRequest:
-        ack_request: SIPRequest = self._ack_request(invite)
+    async def _send_ack(
+        self,
+        invite: SIPRequest,
+        last_recv_msg: Optional[SIPMessage] = None,
+        copy_via: bool = False,
+        **kwargs,
+    ) -> SIPRequest:
+        ack_request: SIPRequest = self._ack_request(
+            invite,
+            last_recv_msg=last_recv_msg,
+            copy_via=copy_via,
+            **kwargs,
+        )
         await self._send_message(ack_request)
         return ack_request
 
@@ -1189,6 +1275,7 @@ class SIPClient:
         register_expires: int = 3600,
         default_response_timeout: float = 32.0,
         max_forwards: int = 70,
+        keep_alive_interval: float = 5.0,
     ):
         self.call_handler_factory: CallHandlerFactory = call_handler_factory
 
@@ -1209,6 +1296,9 @@ class SIPClient:
         self._register_timeout: float = register_timeout
         self._register_expires: int = register_expires
         self._register_dialog: Optional[SIPRegistration] = None
+
+        self._keep_alive_interval: float = keep_alive_interval
+        self._keep_alive_known_addresses: Set[Tuple[str, int]] = set()
 
         self._dialogs: MutableMapping[str, SIPDialog] = {}
         """Map of call IDs to SIP sessions."""
@@ -1259,7 +1349,7 @@ class SIPClient:
         return self._local_addr[1]
 
     @property
-    def own_ip_to_server(self):
+    def own_ip_to_server(self) -> str:
         return get_external_ip_for_dest(self.server_host)
 
     @property
@@ -1268,20 +1358,34 @@ class SIPClient:
         return self.own_ip_to_server, self.local_port
 
     @property
-    def server_uri(self):
+    def server_uri(self) -> SIPURI:
         return SIPURI(
             host=self._domain,
             port=self.server_port if self.server_port != DEFAULT_SIP_PORT else None,
         )
 
     @property
-    def _auth_uri(self):
+    def _auth_uri(self) -> SIPURI:
         return dataclass_replace(self.server_uri, params={"transport": "UDP"})
+
+    @property
+    def binding_uri(self) -> SIPURI:
+        return dataclass_replace(self.server_uri, user=self._username)
+
+    @property
+    def binding_address(self) -> SIPAddress:
+        return SIPAddress(display_name=self._display_name, uri=self.binding_uri)
 
     @property
     def contact_uri(self) -> SIPURI:
         """Return the contact URI for this client."""
-        return dataclass_replace(self.server_uri, user=self._username)
+        # TODO: should Contact: URI always include stuff like transport etc?
+        return dataclass_replace(
+            self.binding_uri,
+            host=self.own_ip_to_server,
+            port=self.local_port,
+            params={"ob": None, "transport": "UDP"},
+        )
 
     @property
     def contact_address(self) -> SIPAddress:
@@ -1289,13 +1393,11 @@ class SIPClient:
 
     @property
     def contact(self) -> hdr.Contact:
-        # TODO: should Contact: always include stuff like transport etc?
-        return hdr.Contact(
-            dataclass_replace(
-                self.contact_address,
-                uri=dataclass_replace(self.contact_uri, params={"transport": "UDP"}),
-            ),
-        )
+        return hdr.Contact(self.contact_address)
+
+    @property
+    def user_agent(self) -> str:
+        return f"{sibilant.__title__}/{sibilant.__version__}"
 
     @property
     def register_attempts(self) -> int:
@@ -1364,7 +1466,12 @@ class SIPClient:
         if call_id is None:
             assert dialog is not None
             call_id = dialog.call_id
-        del self._dialogs[call_id]
+        if call_id not in self._dialogs:
+            _logger.warning(
+                f"Call ID {call_id} not found in tracked dialogs"
+            )  # TODO: debug?
+        else:
+            del self._dialogs[call_id]
 
     def start(self):
         try:
@@ -1471,7 +1578,7 @@ class SIPClient:
                 and self._register_dialog is not None
                 and self._register_dialog.closed
             ):
-                _logger.error("Registration or keep-alive failed, stopping client")
+                _logger.error("Registration or refresh failed, stopping client")
                 terminate_asap = True
 
             await asyncio.sleep(1e-2)
@@ -1568,10 +1675,25 @@ class SIPClient:
     # TODO: this must be a coro
     def send_msg(self, message: SIPMessage):
         message_raw: bytes = message.serialize()
+        self._send_bytes(message_raw, addr=message.destination or None)
+
+    def _send_bytes(
+        self,
+        data_raw: bytes,
+        addr: Optional[Tuple[str, int]] = None,
+        send_wait: bool = False,
+    ):
+        if not addr:
+            addr = self._server_addr
         with self._socket_lock:
             self._socket.setblocking(True)
-            self._socket.sendto(message_raw, self._server_addr)
+            sent: int = 0
+            while sent < len(data_raw):
+                sent += self._socket.sendto(data_raw[sent:], addr)
+                if not send_wait:
+                    break
             self._socket.setblocking(False)
+        self._keep_alive_known_addresses.add(addr)
 
     def _register(self):
         if self._register_dialog is not None:
@@ -1581,6 +1703,8 @@ class SIPClient:
 
         self.schedule(self._register_dialog.register()).result()  # wait
         _logger.debug(f"Registered with {self.server_host} with user {self._username}")
+
+        self.schedule(self._udp_keep_alive())
 
     def _deregister(self):
         if self._register_dialog is None:
@@ -1602,6 +1726,19 @@ class SIPClient:
             return_exceptions=True,
         )
 
+    async def _udp_keep_alive(self):
+        """Send a periodic UDP keepalive to the server, to keep NAT traversal open"""
+        try:
+            while True:
+                known_addresses = list(self._keep_alive_known_addresses)
+                for addr in known_addresses:
+                    sleep_time = self._keep_alive_interval / len(known_addresses)
+                    await asyncio.sleep(sleep_time)
+                    data = b"\x0d\x0a\x0d\x0a"
+                    self._send_bytes(data, addr=addr, send_wait=True)
+        except asyncio.CancelledError:
+            pass
+
     # TODO: should this be async? or should it be blocking?
     def invite(
         self,
@@ -1614,7 +1751,7 @@ class SIPClient:
                     host=self.server_host, port=self.server_port, user=contact
                 )
             else:
-                contact = SIPAddress.parse(contact)
+                contact = SIPAddress.parse(contact, force_brackets=True)
         if isinstance(contact, SIPURI):
             contact = SIPAddress(uri=contact)
         if not isinstance(contact, SIPAddress):
@@ -1647,6 +1784,21 @@ class SIPClient:
         dialog = SIPOptions.from_request(self, message)
         await dialog.receive_message(message)
 
+    def generate_via_hdr(self):
+        via_entry = hdr.ViaEntry(
+            "SIP/2.0/UDP",
+            *self.own_addr_to_server,
+            branch=generate_via_branch(),
+        )
+        via_entry.rport = True
+        return hdr.ViaHeader([via_entry])
+
+    def generate_route_hdr(self, message: SIPMessage) -> hdr.RouteHeader:
+        route: List[hdr.Contact] = []
+        if (record_route_hdr := message.headers.get("Record-Route")) is not None:
+            route = list(reversed(record_route_hdr.contacts))
+        return hdr.RouteHeader(route)
+
     def prepare_headers(
         self,
         *extra_headers: hdr.Header,
@@ -1656,6 +1808,7 @@ class SIPClient:
         cseq: int,
         cseq_method: SIPMethod,
         via_hdr: Optional[hdr.ViaHeader] = None,
+        is_initial: bool = False,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1673,14 +1826,10 @@ class SIPClient:
             call_id = generate_call_id(*self.local_addr)
 
         if via_hdr is None:
-            via_hdr = hdr.ViaHeader(
-                "SIP/2.0/UDP",
-                *self.own_addr_to_server,
-                branch=generate_via_branch(),
-                # TODO: rport? what is it even?
-            )
+            via_hdr = self.generate_via_hdr()
 
-        if contact is None:
+        # FIXME: this is_initial code is probably wrong. Investigate correct usage of Contact:
+        if is_initial and contact is None:
             contact = self.contact
 
         extra_headers = list(extra_headers)
@@ -1693,9 +1842,9 @@ class SIPClient:
             hdr.ToHeader(to_address, tag=to_tag),
             hdr.CallIDHeader(call_id),
             hdr.CSeqHeader(cseq, cseq_method),
-            hdr.ContactHeader([contact]),
+            *([hdr.ContactHeader([contact])] if contact else ()),
             hdr.MaxForwardsHeader(self._max_forwards),
-            hdr.UserAgentHeader(f"{sibilant.__title__}/{sibilant.__version__}"),
+            *([hdr.UserAgentHeader(self.user_agent)] if is_initial else ()),
             *extra_headers,
             *([hdr.ContentTypeHeader(content_type)] if content_type else ()),
             hdr.ContentLengthHeader((body and len(str(body).encode())) or 0),
@@ -1711,6 +1860,8 @@ class SIPClient:
         call_id: str,
         cseq: int,
         cseq_method: Optional[SIPMethod] = None,
+        via_hdr: Optional[hdr.ViaHeader] = None,
+        is_initial: bool = False,
         contact: Optional[hdr.Contact] = None,
         from_tag: Optional[str] = None,
         to_tag: Optional[str] = None,
@@ -1718,9 +1869,11 @@ class SIPClient:
         content_type: Optional[str] = None,
         extra_headers: Sequence[hdr.Header] = (),
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ) -> SIPRequest:
         if uri is None:
-            uri = self.contact_uri
+            uri = self.binding_uri
         if cseq_method is None:
             cseq_method = method
 
@@ -1731,6 +1884,8 @@ class SIPClient:
             call_id=call_id,
             cseq=cseq,
             cseq_method=cseq_method,
+            via_hdr=via_hdr,
+            is_initial=is_initial,
             contact=contact,
             from_tag=from_tag,
             to_tag=to_tag,
@@ -1744,6 +1899,8 @@ class SIPClient:
             uri=uri,
             headers=prepared_headers,
             body=body,
+            origin=origin,
+            destination=destination,
         )
 
     def generate_response(
@@ -1763,6 +1920,8 @@ class SIPClient:
         content_type: Optional[str] = None,
         extra_headers: Sequence[hdr.Header] = (),
         body: Optional[SupportsStr] = None,
+        origin: Optional[Tuple[str, int]] = None,
+        destination: Optional[Tuple[str, int]] = None,
     ) -> SIPResponse:
         prepared_headers: hdr.Headers = self.prepare_headers(
             *extra_headers,
@@ -1784,6 +1943,8 @@ class SIPClient:
             status=status,
             headers=prepared_headers,
             body=body,
+            origin=origin,
+            destination=destination,
         )
 
     def generate_response_from_request(
@@ -1806,15 +1967,20 @@ class SIPClient:
         set_from_request("call_id", "Call-ID", "value")
         set_from_request("cseq", "CSeq", "sequence")
         set_from_request("cseq_method", "CSeq", "method")
-        set_from_request("contact", "Contact", None)
+        kwargs.setdefault("contact", self.contact)
 
-        via_hdr: hdr.ViaHeader = kwargs.pop("via_hdr")
-        if via_hdr.received is None and request.origin is not None:
-            received, rport = request.origin
-            via_hdr = dataclass_replace(via_hdr, received=received)
-            via_hdr.rport = rport
+        extra_headers: List[hdr.Header] = list(kwargs.pop("extra_headers", ()))
+        # check if "Route" is in extra_headers, if not, set it from the request
+        # FIXME: apparently this should not happen. Instead we should echo the Record-Route headers
+        # if not any(isinstance(h, hdr.RouteHeader) for h in extra_headers):
+        #     extra_headers.append(self.generate_route_hdr(request))
+        if record_route_hdr := request.headers.get("Record-Route"):
+            extra_headers.append(record_route_hdr)
+        kwargs["extra_headers"] = tuple(extra_headers)
 
-        return self.generate_response(status, via_hdr=via_hdr, **kwargs)
+        kwargs.setdefault("destination", request.origin)
+
+        return self.generate_response(status, **kwargs)
 
     def generate_auth(
         self,
