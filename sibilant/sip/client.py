@@ -470,8 +470,8 @@ class SIPRegistration(SIPDialog):
         super().__init__(
             client,
             uri=client.server_uri,
-            from_address=client.contact_address,
-            to_address=client.contact_address,
+            from_address=client.binding_address,
+            to_address=client.binding_address,
             from_tag=generate_tag(),
         )
 
@@ -665,7 +665,7 @@ class SIPCall(SIPDialog):
             else:
                 raise TypeError(f"Invalid type for 'from_header': {from_hdr!r}")
         elif from_address is None:
-            from_address = client.contact_address
+            from_address = client.binding_address
         assert from_address is not None
 
         if from_tag is None:
@@ -681,7 +681,7 @@ class SIPCall(SIPDialog):
         assert uri is not None
 
         if own_side is None:
-            if from_address == client.contact_address:
+            if from_address == client.binding_address:
                 own_side = CallSide.CALLER
             else:
                 own_side = CallSide.RECEIVER
@@ -1349,7 +1349,7 @@ class SIPClient:
         return self._local_addr[1]
 
     @property
-    def own_ip_to_server(self):
+    def own_ip_to_server(self) -> str:
         return get_external_ip_for_dest(self.server_host)
 
     @property
@@ -1358,20 +1358,34 @@ class SIPClient:
         return self.own_ip_to_server, self.local_port
 
     @property
-    def server_uri(self):
+    def server_uri(self) -> SIPURI:
         return SIPURI(
             host=self._domain,
             port=self.server_port if self.server_port != DEFAULT_SIP_PORT else None,
         )
 
     @property
-    def _auth_uri(self):
+    def _auth_uri(self) -> SIPURI:
         return dataclass_replace(self.server_uri, params={"transport": "UDP"})
+
+    @property
+    def binding_uri(self) -> SIPURI:
+        return dataclass_replace(self.server_uri, user=self._username)
+
+    @property
+    def binding_address(self) -> SIPAddress:
+        return SIPAddress(display_name=self._display_name, uri=self.binding_uri)
 
     @property
     def contact_uri(self) -> SIPURI:
         """Return the contact URI for this client."""
-        return dataclass_replace(self.server_uri, user=self._username)
+        # TODO: should Contact: URI always include stuff like transport etc?
+        return dataclass_replace(
+            self.binding_uri,
+            host=self.own_ip_to_server,
+            port=self.local_port,
+            params={"ob": None, "transport": "UDP"},
+        )
 
     @property
     def contact_address(self) -> SIPAddress:
@@ -1379,13 +1393,7 @@ class SIPClient:
 
     @property
     def contact(self) -> hdr.Contact:
-        # TODO: should Contact: always include stuff like transport etc?
-        return hdr.Contact(
-            dataclass_replace(
-                self.contact_address,
-                uri=dataclass_replace(self.contact_uri, params={"transport": "UDP"}),
-            ),
-        )
+        return hdr.Contact(self.contact_address)
 
     @property
     def user_agent(self) -> str:
@@ -1820,6 +1828,7 @@ class SIPClient:
         if via_hdr is None:
             via_hdr = self.generate_via_hdr()
 
+        # FIXME: this is_initial code is probably wrong. Investigate correct usage of Contact:
         if is_initial and contact is None:
             contact = self.contact
 
@@ -1864,7 +1873,7 @@ class SIPClient:
         destination: Optional[Tuple[str, int]] = None,
     ) -> SIPRequest:
         if uri is None:
-            uri = self.contact_uri
+            uri = self.binding_uri
         if cseq_method is None:
             cseq_method = method
 
@@ -1958,7 +1967,7 @@ class SIPClient:
         set_from_request("call_id", "Call-ID", "value")
         set_from_request("cseq", "CSeq", "sequence")
         set_from_request("cseq_method", "CSeq", "method")
-        set_from_request("contact", "Contact", None)
+        kwargs.setdefault("contact", self.contact)
 
         extra_headers: List[hdr.Header] = list(kwargs.pop("extra_headers", ()))
         # check if "Route" is in extra_headers, if not, set it from the request
