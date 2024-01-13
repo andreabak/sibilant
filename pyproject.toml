@@ -26,5 +26,48 @@ include = ["sibilant*"]
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 
+[tool.ruff]
+fix = true
+ignore-init-module-imports = true
+select = ["F", "E", "W", "I", "N", "D", "UP", "ASYNC", "S", "BLE", "FBT", "B", "C4", "DTZ", "T10", "EXE", "ISC003", "ICN", "G010", "G1", "G2", "PIE", "T20", "PT", "Q", "RSE", "RET", "SLF", "SLOT", "SIM", "TID", "INT", "TCH", "INT", "ARG", "PTH", "TD", "FIX", "ERA", "PGH", "PL", "TRY", "FLY", "NPY", "PERF", "FURB", "LOG", "RUF"]
+ignore = ["F403", "N816", "N818", "D105", "D107", "D203", "D212", "D205", "D400", "C408", "RET505", "TD001", "TD002", "TD003", "TRY003", "TRY200", "TRY301", "S101", "S104", "S311", "S324", "PLW0602", "PGH004", "PLW1641", "FBT003", "PTH123", "ARG002", "ARG003", "PT011", "PT012"]
+show-fixes = true
+preview = true
+
+[tool.ruff.per-file-ignores]
+"tests/**" = ["D", "S", "T", "SLF001", "PLR2004", "PLR6301"]
+
+[tool.ruff.pycodestyle]
+ignore-overlong-task-comments = true
+max-line-length = 100
+
+[tool.ruff.isort]
+combine-as-imports = true
+lines-after-imports = 2
+
+[tool.ruff.flake8-self]
+ignore-names = ["_name_", "_value_", "_wrapped_value_", "_dtcls_value_", "_time_cache_expiry", "_track_call", "_untrack_call", "_send_msg", "_track_future", "_track_dialog", "_untrack_dialog", "_schedule"]
+
+[tool.ruff.pylint]
+max-args = 10
+max-bool-expr = 8
+max-branches = 20
+max-returns = 8
+max-public-methods = 25
+max-statements = 70
+allow-dunder-method-names = ["__registry_new_for__", "__registry_get_class_for__"]
+
+[tool.ruff.pyupgrade]
+keep-runtime-typing = true
+
+[tool.mypy]
+show_error_codes = true
+ignore_missing_imports = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+plugins = ["numpy.typing.mypy_plugin"]
+
 [tool.pytest.ini_options]
 addopts = "-vrxPs --cov=sibilant"

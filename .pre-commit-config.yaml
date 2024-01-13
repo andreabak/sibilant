@@ -1,0 +1,76 @@
+default_language_version:
+  python: python3.8
+exclude: ^(build|dist|.*\.egg(-info)?|\.github)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-case-conflict
+      - id: trailing-whitespace
+        exclude: (\.md|\.rst|splash.py)$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-xml
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+        exclude: (\.jinjia2?|\.j2)$
+      - id: debug-statements
+      - id: destroyed-symlinks
+      - id: detect-private-key
+        exclude: ^(modules)
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: fix-encoding-pragma
+        args: [ "--remove" ]
+      - id: mixed-line-ending
+        args: [ "--fix=lf" ]
+      - id: name-tests-test
+        args: [ "--pytest-test-first" ]
+      - id: requirements-txt-fixer
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.13
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        name: ruff-required
+        args:
+          - --ignore=FIX,PLR6301,PLR2004,ERA,D401
+          - --fix
+          - --exit-non-zero-on-fix
+      - id: ruff
+        name: ruff-optional
+        verbose: true
+        args:
+          - --select=FIX,PLR6301,PLR2004,ERA,D401
+          - --no-fix
+          - --exit-zero
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        exclude: ^tests/
+        args:
+          - --install-types
+          - --non-interactive
+        additional_dependencies:
+          - numpy
+
+  - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
+    rev: v1.3.2
+    hooks:
+      - id: python-safety-dependencies-check
+        files: requirements.*\.txt
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v3.1.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [ commit-msg ]
+        args: [ "ref" ]
