@@ -5,12 +5,12 @@ import pytest
 from sibilant import PhoneState
 from sibilant.voip import VoIPPhone
 
+
 _logger = logging.getLogger(__name__)
 
 
-@pytest.mark.needs_test_server
+@pytest.mark.needs_test_server()
 class TestVoIPPhoneReal:
-
     def test_start_stop(self, test_server_kwargs):
         phone = VoIPPhone(**test_server_kwargs)
 
@@ -29,4 +29,3 @@ class TestVoIPPhoneReal:
 
         assert not phone.registered, "Phone should be unregistered with the server"
         assert phone.state == PhoneState.INACTIVE, "Phone state should be INACTIVE"
-

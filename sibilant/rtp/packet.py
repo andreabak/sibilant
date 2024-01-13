@@ -3,27 +3,28 @@ from __future__ import annotations
 import enum
 import time
 from contextlib import contextmanager
-from dataclasses import replace as dataclass_replace, field as dataclass_field
+from dataclasses import field as dataclass_field, replace as dataclass_replace
 from typing import (
-    Union,
-    Optional,
     TYPE_CHECKING,
     Any,
-    ClassVar,
-    List,
-    Iterator,
-    Type,
     Callable,
+    ClassVar,
+    Iterator,
+    List,
+    Optional,
+    Type,
+    Union,
 )
-from typing_extensions import Self
 
 import numpy as np
 from cbitstruct import CompiledFormat
+from typing_extensions import Self
 
-from ..codecs import Codec, PCMUCodec, PCMACodec
+from ..codecs import Codec, PCMACodec, PCMUCodec
 from ..constants import SUPPORTED_RTP_VERSIONS
-from ..helpers import FieldsEnum, dataclass, FieldsEnumDatatype
 from ..exceptions import RTPUnsupportedCodec, RTPUnsupportedVersion
+from ..helpers import FieldsEnum, FieldsEnumDatatype, dataclass
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -336,7 +337,7 @@ class RTPPacketsStats:
 
     def format(self) -> str:
         return (
-            f"{self.count} packets, {self.bytes_per_sec/(1024**2):,.2f} MB/s, "
+            f"{self.count} packets, {self.bytes_per_sec / (1024**2):,.2f} MB/s, "
             f"{self.count_per_sec:,.2f} packets/s, {self.realtime_factor:,.2f}x realtime"
         )
 

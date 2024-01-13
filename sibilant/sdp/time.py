@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import re
 from abc import ABC
-from typing import Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
+
 from typing_extensions import Self
 
 from ..exceptions import SDPParseError
 from ..helpers import dataclass
 from .common import SDPField, SDPSection
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -22,8 +24,7 @@ __all__ = [
 
 
 @dataclass
-class SDPTimeFields(SDPField, ABC, registry=True, registry_attr="_type"):
-    ...
+class SDPTimeFields(SDPField, ABC, registry=True, registry_attr="_type"): ...
 
 
 @dataclass(slots=True)

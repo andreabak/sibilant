@@ -18,6 +18,9 @@ __all__ = [
 ]
 
 
+# ruff: noqa: E221, E241, UP034, PLR2004
+
+
 def ulaw_encode_slow(data: np.ndarray) -> np.ndarray:
     """Encodes `np.float32` [-1.0, 1.0] data to μ-law-encoded `np.uint8`."""
     data = (data * (2**15 - 1)).astype(np.int16)
@@ -69,10 +72,9 @@ lin_u16_to_ulaw_lut = ulaw_encode_slow((np.arange(-2 ** 13, 2 ** 13) / 2 ** 13))
 # fmt: on
 
 
-# fmt: off
 def alaw_encode_slow(data: np.ndarray) -> np.ndarray:
     """Encodes `np.float32` [-1.0, 1.0] data to A-law-encoded `np.uint8`."""
-    data = (data * (2 ** 15 - 1)).astype(np.int16)
+    data = (data * (2**15 - 1)).astype(np.int16)
 
     cclip = 32767
     sign = np.bitwise_not(data) >> 8 & 0x80
@@ -88,11 +90,12 @@ def alaw_encode_slow(data: np.ndarray) -> np.ndarray:
 
     res = np.zeros_like(data, dtype=np.uint8)
     res[mask] = (exp[mask] << 4) | mant[mask]
-    res[~mask] = (data[~mask] >> 4)
+    res[~mask] = data[~mask] >> 4
 
     return np.bitwise_xor(res, (sign ^ 0x55))
 
 
+# fmt: off
 alaw_comp_table = np.floor(np.log2(np.clip(np.arange(2**7), 1, None))).astype(np.uint8)
 alaw_to_lin_i16_lut = np.array([
      -5504,  -5248,  -6016,  -5760,  -4480,  -4224,  -4992,  -4736,
@@ -155,7 +158,9 @@ class PCMUCodec(Codec):
 
     def decode(self, data: bytes) -> np.ndarray:
         data_bytes: bytes = audioop.ulaw2lin(data, 2)
-        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (2 ** 15 - 1)
+        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (
+            2**15 - 1
+        )
         # FIXME: fix and restore numpy implementations / or find better solution
         # return ulaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))
 
@@ -172,6 +177,8 @@ class PCMACodec(Codec):
 
     def decode(self, data: bytes) -> np.ndarray:
         data_bytes: bytes = audioop.alaw2lin(data, 2)
-        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (2 ** 15 - 1)
+        return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (
+            2**15 - 1
+        )
         # FIXME: fix and restore numpy implementations / or find better solution
         # return alaw_to_lin_f32_lut.take(np.frombuffer(data, dtype=np.uint8))

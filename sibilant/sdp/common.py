@@ -4,30 +4,32 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import InitVar
 from typing import (
-    ClassVar,
-    Dict,
-    Optional,
-    List,
+    TYPE_CHECKING,
     Any,
+    ClassVar,
     Deque,
+    Dict,
+    List,
+    MutableMapping,
+    Optional,
+    Tuple,
     Type,
     Union,
-    MutableMapping,
-    get_type_hints,
     get_origin,
-    Tuple,
-    TYPE_CHECKING,
+    get_type_hints,
 )
+
 from typing_extensions import Self
 
 from ..exceptions import SDPParseError, SDPUnknownFieldError
 from ..helpers import (
+    DEFAULT,
     Registry,
     StrValueMixin,
-    DEFAULT,
     dataclass,
     try_unpack_optional_type,
 )
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -412,10 +414,10 @@ class SDPSection(ABC):
             wrapped_type: Type = cls._reveal_wrapped_type(field_type)
             sdp_type: Optional[str] = None
             if issubclass(wrapped_type, SDPField):
-                sdp_type = getattr(wrapped_type, "_type")
+                sdp_type = wrapped_type._type
             elif issubclass(wrapped_type, SDPSection):
                 # noinspection PyProtectedMember
-                sdp_type = getattr(wrapped_type, "_start_field")._type
+                sdp_type = wrapped_type._start_field._type
                 cls._subsections_map[sdp_type] = wrapped_type
             elif not issubclass(wrapped_type, SDPField):
                 continue

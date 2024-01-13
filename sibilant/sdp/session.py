@@ -3,30 +3,32 @@ from __future__ import annotations
 import logging
 from abc import ABC
 from dataclasses import field as dataclass_field
-from typing import Dict, Optional, List, Any, MutableMapping, TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, MutableMapping, Optional, Tuple
+
 from typing_extensions import Self
 
-from ..rtp import MediaFlowType
 from ..constants import SUPPORTED_SDP_VERSIONS
 from ..exceptions import SDPParseError
 from ..helpers import StrValueMixin, dataclass
+from ..rtp import MediaFlowType
 from .common import (
+    InactiveFlag,
+    RecvOnlyFlag,
+    SDPAttribute,
+    SDPAttributeField,
+    SDPBandwidthField,
+    SDPConnectionField,
+    SDPEncryptionField,
     SDPField,
     SDPInformationField,
-    SDPConnectionField,
-    SDPBandwidthField,
-    SDPEncryptionField,
-    SDPAttribute,
-    UnknownAttribute,
-    RecvOnlyFlag,
-    SendRecvFlag,
-    SendOnlyFlag,
-    InactiveFlag,
-    SDPAttributeField,
     SDPSection,
+    SendOnlyFlag,
+    SendRecvFlag,
+    UnknownAttribute,
 )
 from .media import SDPMedia, get_media_flow_type
 from .time import SDPTime
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -61,8 +63,7 @@ _logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SDPSessionFields(SDPField, ABC, registry=True, registry_attr="_type"):
-    ...
+class SDPSessionFields(SDPField, ABC, registry=True, registry_attr="_type"): ...
 
 
 @dataclass(slots=True)
@@ -121,16 +122,14 @@ class SDPSessionOrigin(SDPSessionFields):
         )
 
     def serialize(self) -> str:
-        return " ".join(
-            (
-                self.username,
-                self.sess_id,
-                self.sess_version,
-                self.nettype,
-                self.addrtype,
-                self.unicast_address,
-            )
-        )
+        return " ".join((
+            self.username,
+            self.sess_id,
+            self.sess_version,
+            self.nettype,
+            self.addrtype,
+            self.unicast_address,
+        ))
 
 
 @dataclass(slots=True)
@@ -312,33 +311,27 @@ class SDPSessionEncryption(SDPEncryptionField, SDPSessionFields):
 
 
 @dataclass
-class SDPSessionAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"):
-    ...
+class SDPSessionAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"): ...
 
 
 @dataclass(slots=True)
-class UnknownSessionAttribute(UnknownAttribute, SDPSessionAttribute):
-    ...
+class UnknownSessionAttribute(UnknownAttribute, SDPSessionAttribute): ...
 
 
 @dataclass(slots=True)
-class RecvOnlySessionFlag(RecvOnlyFlag, SDPSessionAttribute):
-    ...
+class RecvOnlySessionFlag(RecvOnlyFlag, SDPSessionAttribute): ...
 
 
 @dataclass(slots=True)
-class SendRecvSessionFlag(SendRecvFlag, SDPSessionAttribute):
-    ...
+class SendRecvSessionFlag(SendRecvFlag, SDPSessionAttribute): ...
 
 
 @dataclass(slots=True)
-class SendOnlySessionFlag(SendOnlyFlag, SDPSessionAttribute):
-    ...
+class SendOnlySessionFlag(SendOnlyFlag, SDPSessionAttribute): ...
 
 
 @dataclass(slots=True)
-class InactiveSessionFlag(InactiveFlag, SDPSessionAttribute):
-    ...
+class InactiveSessionFlag(InactiveFlag, SDPSessionAttribute): ...
 
 
 @dataclass(slots=True)

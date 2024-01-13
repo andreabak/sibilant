@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import re
-from dataclasses import field as dataclass_field, replace as dataclass_replace
-from typing import Optional, Match, Collection, Dict, Mapping, TYPE_CHECKING
-from typing_extensions import Self
+from dataclasses import field as dataclass_field
+from typing import TYPE_CHECKING, Collection, Dict, Mapping, Match, Optional
 
 from frozendict import frozendict
+from typing_extensions import Self
 
 from .exceptions import SIPParseError
 from .helpers import dataclass
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass

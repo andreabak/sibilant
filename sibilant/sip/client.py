@@ -17,43 +17,45 @@ from dataclasses import replace as dataclass_replace
 from functools import partial
 from types import MappingProxyType
 from typing import (
-    Optional,
-    Tuple,
-    MutableMapping,
-    Union,
-    Sequence,
-    Awaitable,
-    TypeVar,
-    Mapping,
-    List,
-    Set,
-    Callable,
     Any,
-    Coroutine,
+    Awaitable,
+    Callable,
     Collection,
+    Coroutine,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
     Protocol,
+    Sequence,
+    Set,
+    Tuple,
+    TypeVar,
+    Union,
+    runtime_checkable,
 )
 
-from typing_extensions import Self, runtime_checkable
+from typing_extensions import Self
 
 import sibilant
-from .. import sdp, rtp
+
+from .. import rtp, sdp
 from ..constants import DEFAULT_SIP_PORT
 from ..exceptions import (
-    SIPParseError,
-    SIPUnsupportedVersion,
-    SIPTimeout,
-    SIPBadResponse,
     SIPAuthenticationError,
-    SIPBadRequest,
-    SIPException,
-    SIPUnsupportedError,
     SIPBadMessage,
+    SIPBadRequest,
+    SIPBadResponse,
+    SIPException,
+    SIPParseError,
+    SIPTimeout,
+    SIPUnsupportedError,
+    SIPUnsupportedVersion,
 )
 from ..helpers import SupportsStr, get_external_ip_for_dest
 from ..structures import SIPURI, SIPAddress
 from . import headers as hdr
-from .messages import SIPResponse, SIPRequest, SIPMessage, SIPMethod, SIPStatus
+from .messages import SIPMessage, SIPMethod, SIPRequest, SIPResponse, SIPStatus
 
 
 _logger = logging.getLogger(__name__)
@@ -337,7 +339,7 @@ class SIPDialog(ABC):
         via_hdr: hdr.ViaHeader = message.headers.get("Via")
         if via_hdr is None:
             raise SIPBadMessage("Missing Via header")
-        if isinstance(via_hdr.first.rport, int) and not self._rport or replace:
+        if (isinstance(via_hdr.first.rport, int) and not self._rport) or replace:
             self._rport = via_hdr.first.rport
         if not self._destination or replace:
             self._destination = message.origin
@@ -1433,23 +1435,19 @@ class SIPClient:
 
     @property
     def calls(self) -> Mapping[str, SIPDialog]:
-        return MappingProxyType(
-            {
-                call_id: dialog
-                for call_id, dialog in self._dialogs.items()
-                if isinstance(dialog, SIPCall)
-            }
-        )
+        return MappingProxyType({
+            call_id: dialog
+            for call_id, dialog in self._dialogs.items()
+            if isinstance(dialog, SIPCall)
+        })
 
     @property
     def _dialogs_except_register(self) -> Mapping[str, SIPDialog]:
-        return MappingProxyType(
-            {
-                call_id: dialog
-                for call_id, dialog in self._dialogs.items()
-                if not isinstance(dialog, SIPRegistration)
-            }
-        )
+        return MappingProxyType({
+            call_id: dialog
+            for call_id, dialog in self._dialogs.items()
+            if not isinstance(dialog, SIPRegistration)
+        })
 
     def track_dialog(self, dialog: SIPDialog):
         assert dialog.call_id not in self._dialogs
@@ -1720,7 +1718,7 @@ class SIPClient:
             _logger.warning(f"Error while deregistering: {exc}")
 
     async def _close_active_dialogs(self):
-        """schedule close all dialogs with their async close using gather"""
+        """Schedule close all dialogs with their async close using gather"""
         await asyncio.gather(
             *(dialog.terminate() for dialog in self._dialogs_except_register.values()),
             return_exceptions=True,

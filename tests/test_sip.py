@@ -3,28 +3,29 @@ import re
 import socket
 import time
 import traceback
-from collections import defaultdict, namedtuple, deque
+from collections import defaultdict, deque, namedtuple
 from contextlib import contextmanager, nullcontext
-from typing import Mapping, Sequence, Optional, Type
+from typing import Mapping, Optional, Sequence
 
 import pytest
 
 from sibilant import rtp
 from sibilant.exceptions import SIPException
 from sibilant.sip import (
+    CallState,
+    Header,
+    Headers,
+    MultipleValuesHeader,
+    SIPCall,
+    SIPClient,
+    SIPMessage,
+    SIPMethod,
+    SIPRegistration,
     SIPRequest,
     SIPResponse,
-    SIPMessage,
-    SIPClient,
-    SIPCall,
-    SIPMethod,
-    Header,
-    MultipleValuesHeader,
-    Headers,
-    SIPRegistration,
-    CallState,
 )
-from .conftest import MockServer, Dest
+
+from .conftest import Dest, MockServer
 
 
 _logger = logging.getLogger(__name__)
@@ -62,7 +63,9 @@ class TestHeaders:
             else:
                 if not issubclass(header_cls, MultipleValuesHeader):
                     wrong_classes.append(header_name)
-        assert not wrong_classes, "Headers with multiple values should be MultipleValuesHeader"
+        assert (
+            not wrong_classes
+        ), "Headers with multiple values should be MultipleValuesHeader"
 
 
 class TestSIPMessages:
@@ -141,7 +144,7 @@ class TestSIPMessages:
 PacketAndSIPMessage = namedtuple("PacketAndSIPMessage", ["packet", "message"])
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_transactions(sip_packets):
     """
     Return lists of packets and SIP messages, grouped by transaction.
@@ -167,7 +170,7 @@ def sip_transactions(sip_packets):
     return transactions
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_registrations(sip_transactions):
     """Return lists of SIP REGISTER transactions, grouped by transaction."""
     return {
@@ -177,7 +180,7 @@ def sip_registrations(sip_transactions):
     }
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_invites(sip_transactions):
     """Return lists of SIP INVITE transactions, grouped by transaction."""
     return {
@@ -187,7 +190,7 @@ def sip_invites(sip_transactions):
     }
 
 
-@pytest.fixture
+@pytest.fixture()
 def incoming_invites(sip_invites):
     """Return lists of incoming SIP INVITE transactions, grouped by transaction."""
     return {
@@ -197,7 +200,7 @@ def incoming_invites(sip_invites):
     }
 
 
-@pytest.fixture
+@pytest.fixture()
 def outgoing_invites(sip_invites):
     """Return lists of outgoing SIP INVITE transactions, grouped by transaction."""
     return {
@@ -309,7 +312,7 @@ def mute_caplog(caplog, mute, logger_name=None):
     return log_level_context
 
 
-@pytest.fixture
+@pytest.fixture()
 def skip_register(monkeypatch):
     async def mock_register(self):
         self._registered = True
@@ -317,13 +320,13 @@ def skip_register(monkeypatch):
     monkeypatch.setattr(SIPRegistration, "register", mock_register)
 
 
-@pytest.fixture
+@pytest.fixture()
 def skip_deregister(monkeypatch):
     original__register_transaction = SIPRegistration._register_transaction
 
     async def mock_register_transaction(self, deregister: bool = False) -> None:
         if deregister:
-            return  # skip deregister
+            return None  # skip deregister
         return await original__register_transaction(self, deregister=deregister)
 
     monkeypatch.setattr(
@@ -391,10 +394,8 @@ class TestSIPClient:
 
                     raise StopIteration
 
-                assert (
-                    exc_info.type == StopIteration
-                    or issubclass(exc_info.type, SIPException)
-                    and expect_failure
+                assert exc_info.type == StopIteration or (
+                    issubclass(exc_info.type, SIPException) and expect_failure
                 ), (
                     f"SIP client failed with unexpected {exc_info.type}: {exc_info.value}"
                     f"\n{traceback.format_tb(exc_info.tb)}"
@@ -415,8 +416,10 @@ class TestSIPClient:
                 if pm is None:
                     continue
                 if (
-                    isinstance(pm.message, SIPResponse)
-                    and pm.message.status.code == 400
+                    (
+                        isinstance(pm.message, SIPResponse)
+                        and pm.message.status.code == 400
+                    )
                     or pm.message.status.code >= 402
                     or (
                         pm.message.status.code == 401
@@ -491,7 +494,7 @@ class TestSIPClient:
                     _logger.warning(f"Unexpected packet in incoming INVITE flow: {pm}")
                     server_packets = []
                     break
-                last_method = msg and msg.method or None
+                last_method = (msg and msg.method) or None
             if not server_packets:
                 continue
 

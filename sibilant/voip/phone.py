@@ -8,23 +8,24 @@ from dataclasses import replace as dataclass_replace
 from functools import partial
 from types import MappingProxyType
 from typing import (
-    Mapping,
-    Sequence,
-    Optional,
     Any,
-    Union,
     Callable,
-    Dict,
-    Tuple,
     Collection,
+    Dict,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
 )
 
 import numpy as np
 
 from .. import rtp, sip
 from ..constants import DEFAULT_SIP_PORT
-from ..exceptions import VoIPPhoneException, VoIPCallException, VoIPCallTimeoutError
+from ..exceptions import VoIPCallException, VoIPCallTimeoutError, VoIPPhoneException
 from ..structures import SIPAddress
+
 
 SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
     fmt if payload_type is None else dataclass_replace(fmt, payload_type=payload_type)
@@ -171,7 +172,9 @@ class VoIPCall:
         """Hangup the call."""
         # send either a SIP BYE or a CANCEL depending on the call state (answered or not)
         if self.state == sip.CallState.ESTABLISHED:
-            asyncio.run_coroutine_threadsafe(self._sip_call.bye(), self._sip_call.client.event_loop).result()
+            asyncio.run_coroutine_threadsafe(
+                self._sip_call.bye(), self._sip_call.client.event_loop
+            ).result()
         elif self.state in (sip.CallState.INVITE, sip.CallState.RINGING):
             self._sip_call.set_cancel()
         else:
@@ -284,7 +287,9 @@ class VoIPPhone:
         )
 
         self.on_incoming_call: Optional[IncomingCallCallback] = on_incoming_call
-        self.on_call_established: Optional[EstablishedCallCallback] = on_call_established
+        self.on_call_established: Optional[EstablishedCallCallback] = (
+            on_call_established
+        )
         self.on_call_terminated: Optional[TerminatedCallCallback] = on_call_terminated
 
         self._calls: Dict[str, VoIPCall] = {}
@@ -338,7 +343,9 @@ class VoIPPhone:
     def check_can_accept_calls(self, excluded_calls=()) -> None:
         if not self._sip_client.registered:
             raise VoIPPhoneException("Phone is not registered with the server.")
-        if any(call.active for call in self._calls.values() if call not in excluded_calls):
+        if any(
+            call.active for call in self._calls.values() if call not in excluded_calls
+        ):
             # TODO: allow handling multiple calls at once
             raise VoIPPhoneException("Phone is busy with another call.")
         if self.on_incoming_call is None:

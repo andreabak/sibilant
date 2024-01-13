@@ -2,18 +2,19 @@ import itertools
 import random
 import socket
 import time
-from collections import namedtuple, defaultdict
+from collections import defaultdict, namedtuple
 
 import pytest
 
 from sibilant.exceptions import RTPBrokenStreamError, RTPMismatchedStreamError
 from sibilant.rtp import (
-    RTPPacket,
-    RTPStreamBuffer,
     RTPClient,
     RTPMediaProfiles,
+    RTPPacket,
     RTPPacketsStats,
+    RTPStreamBuffer,
 )
+
 from .conftest import Dest, MockServer
 
 
@@ -22,7 +23,7 @@ class TestRTPPackets:
         """Test that all the sample RTP packets can be parsed."""
         for packet in rtp_packets:
             rtp_packet = RTPPacket.parse(packet.data)
-            pass  # TODO: asserts
+            # TODO: asserts
 
 
 def _streams_iterator(packets, skip_payload_types=(96, 101)):
@@ -132,7 +133,7 @@ class TestRTPStreamBuffer:
             for _ in range(shuffle_size):
                 try:
                     chunk.append(next(packets))
-                except StopIteration as e:
+                except StopIteration:
                     return
             if not chunk:
                 break
@@ -299,7 +300,9 @@ class TestRTPClient:
             send_delay_factor=3e-3,
             pre_bind=True,
         )
-        assert client.local_port > 0, "Client port should have been assigned in pre_bind"
+        assert (
+            client.local_port > 0
+        ), "Client port should have been assigned in pre_bind"
         client_address = client.local_addr
         server = MockRTPServer(
             server_packets, server_address, client_address, send_delay=2e-3

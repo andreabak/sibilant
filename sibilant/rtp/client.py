@@ -1,29 +1,40 @@
 from __future__ import annotations
 
 import enum
+import errno
 import logging
 import random
 import socket
 import threading
 import time
-from io import RawIOBase
 from collections import deque
+from io import RawIOBase
 from types import MappingProxyType
-from typing import IO, Deque, Optional, Mapping, Dict, Any, Union, Tuple, Collection, List
+from typing import (
+    IO,
+    Any,
+    Collection,
+    Deque,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
-import errno
 import numpy as np
 
-from . import RTPMediaProfiles, RTPPacketsStats, RTPMediaFormat, RTPMediaType, DTMFEvent
-from .packet import RTPPacket
-from ..constants import SUPPORTED_RTP_PROFILES, DEFAULT_RTP_PORT_RANGE
+from ..constants import DEFAULT_RTP_PORT_RANGE, SUPPORTED_RTP_PROFILES
 from ..exceptions import (
     RTPBrokenStreamError,
     RTPMismatchedStreamError,
-    RTPUnsupportedVersion,
     RTPParseError,
     RTPUnhandledPayload,
+    RTPUnsupportedVersion,
 )
+from . import DTMFEvent, RTPMediaFormat, RTPMediaProfiles, RTPMediaType, RTPPacketsStats
+from .packet import RTPPacket
 
 
 _logger = logging.getLogger(__name__)
@@ -207,7 +218,9 @@ class RTPStreamBuffer(RawIOBase, IO):
             data = self.read(size)
             if not data:
                 return None
-            time_span: int = len(data)  # FIXME: depends on profile, this hack works for PCMA/PCMU
+            time_span: int = len(
+                data
+            )  # FIXME: depends on profile, this hack works for PCMA/PCMU
             self.sequence = (self.sequence + 1) % self.SEQUENCE_MAX
             self.timestamp = (self.timestamp + time_span) % self.TIMESTAMP_MAX
 
@@ -599,10 +612,7 @@ class RTPClient:
 
         recv_stream = self._recv_streams[packet.ssrc]
 
-        if (
-            recv_stream.profile is None
-            or packet.payload_type == recv_stream.profile
-        ):
+        if recv_stream.profile is None or packet.payload_type == recv_stream.profile:
             recv_stream.write_packet(packet)
         else:  # FIXME: kinda hacky, should probably happen somewhere else?
             profile = self._media_profiles[packet.payload_type.payload_type]
@@ -647,7 +657,7 @@ class RTPClient:
             send_time: float = (post_send_time_ns - pre_send_time_ns) / 1e9
             if packet is not None:
                 self._send_stats.add(packet, send_time)
-            packet_duration: float = packet and packet.duration or 0.0
+            packet_duration: float = (packet and packet.duration) or 0.0
             sleep_time: float = max(0.0, max(1 / 96_000, packet_duration) - send_time)
             self._last_send_time_ns = post_send_time_ns
             time.sleep(sleep_time * self._send_delay_factor)
@@ -660,15 +670,19 @@ class RTPClient:
         :param size: The maximum number of bytes to read.
         """
         if not self._recv_streams:
-            return b''
+            return b""
         if len(self._recv_streams) > 1:
             # FIXME: handle multiplexed streams
-            raise NotImplementedError('Reading a single stream from multiple streams is not supported')
+            raise NotImplementedError(
+                "Reading a single stream from multiple streams is not supported"
+            )
 
         stream = next(iter(self._recv_streams.values()))
         return stream.read(size)
 
-    def _mix_recv_audio_streams(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
+    def _mix_recv_audio_streams(
+        self, size: int = RTPStreamBuffer.DEFAULT_SIZE
+    ) -> np.ndarray:
         """
         If there are multiple active recv streams we need to mix them together.
         """
@@ -685,10 +699,12 @@ class RTPClient:
         max_offset: int = 0
         streams_timeline: List[Tuple[RTPStreamBuffer, int, int]] = []
         for stream in self._recv_streams.values():
-            if stream.pending_count:  # cannot mix streams with pending packets, must wait
+            if (
+                stream.pending_count
+            ):  # cannot mix streams with pending packets, must wait
                 assert mix_buf.size == 0
                 return mix_buf
-            end_offset = (stream.sequence * 160)
+            end_offset = stream.sequence * 160
             start_offset = end_offset - stream.buffer_len
             streams_timeline.append((stream, start_offset, end_offset))
             min_offset = min(min_offset, start_offset)
@@ -706,7 +722,9 @@ class RTPClient:
             mix_offset = start_offset - min_offset
             read_size = min(buf_size - mix_offset, end_offset - start_offset)
             if read_size > 0:
-                mix_buf[mix_offset:mix_offset+read_size] += stream.read_audio(read_size)
+                mix_buf[mix_offset : mix_offset + read_size] += stream.read_audio(
+                    read_size
+                )
 
         return mix_buf
 
@@ -727,7 +745,7 @@ class RTPClient:
         Handles telephone event packets.
         """
         dtmf = DTMFEvent.parse(packet.payload)
-        pass  # TODO: implement
+        # TODO: implement
 
     def write(self, data: bytes) -> int:
         """

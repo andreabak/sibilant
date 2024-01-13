@@ -7,7 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from typing import Tuple, Generic, TypeVar, Iterator, Optional
+from typing import Generic, Iterator, Optional, Tuple, TypeVar
 
 import dpkt
 import pytest
@@ -102,7 +102,6 @@ def voip_calls():
     Parse pcap files, and return an iterable of calls, which are iterables of packets.
     Separate client and server packets, and SIP and RTP packets.
     """
-
     calls = []
 
     pcaps_dir = Path(__file__).parent / "pcaps"
@@ -162,9 +161,9 @@ def voip_calls():
                             dest = Dest.CLIENT
                         extract_aux_ip()
                     elif first_line.startswith(b"SIP/2.0"):
-                        if re.search(rf"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
+                        if re.search(r"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
                             dest = Dest.CLIENT
-                        elif re.search(rf"^CSeq:.*INVITE", data.decode(), re.M | re.I):
+                        elif re.search(r"^CSeq:.*INVITE", data.decode(), re.M | re.I):
                             dest = Dest.SERVER
                             extract_aux_ip()
 
@@ -218,7 +217,7 @@ def voip_calls():
     return tuple(calls)
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets(voip_calls):
     """Return a list of SIP packets from all the calls."""
     return [
@@ -229,31 +228,31 @@ def sip_packets(voip_calls):
     ]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_requests(sip_packets):
     """Return a list of SIP requests from all the calls."""
     return [packet for packet in sip_packets if not packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_responses(sip_packets):
     """Return a list of SIP responses from all the calls."""
     return [packet for packet in sip_packets if packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets_from_client(sip_packets):
     """Return a list of SIP packets from the client."""
     return [packet for packet in sip_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets_from_server(sip_packets):
     """Return a list of SIP packets from the server."""
     return [packet for packet in sip_packets if packet.dest == Dest.CLIENT]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets(voip_calls):
     """Return a list of RTP packets from all the calls."""
     return [
@@ -264,13 +263,13 @@ def rtp_packets(voip_calls):
     ]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets_from_client(rtp_packets):
     """Return a list of RTP packets from the client."""
     return [packet for packet in rtp_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets_from_server(rtp_packets):
     """Return a list of RTP packets from the server."""
     return [packet for packet in rtp_packets if packet.dest == Dest.CLIENT]

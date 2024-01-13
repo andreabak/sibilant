@@ -15,24 +15,24 @@ from collections import OrderedDict
 from dataclasses import dataclass as _dtcls, is_dataclass
 from inspect import isabstract
 from typing import (
+    TYPE_CHECKING,
     Any,
+    Callable,
+    ClassVar,
     Generic,
+    List,
+    Mapping,
     MutableMapping,
     Optional,
+    Pattern,
+    Protocol,
     Type,
     TypeVar,
-    cast,
-    ClassVar,
     Union,
-    Pattern,
-    List,
-    Callable,
+    cast,
     get_args,
     get_origin,
-    TYPE_CHECKING,
-    Protocol,
 )
-from typing import Mapping
 
 
 _dT = TypeVar("_dT")
@@ -54,8 +54,7 @@ if TYPE_CHECKING:
 @typing.runtime_checkable
 class SupportsStr(Protocol):
     @abstractmethod
-    def __str__(self) -> str:
-        ...
+    def __str__(self) -> str: ...
 
 
 class FieldsEnumDatatype:
@@ -97,7 +96,7 @@ class FieldsEnum(enum.Enum):
             try:
                 enum_value = src.enum_value
                 break
-            except (NotImplementedError, AttributeError) as exc:
+            except (NotImplementedError, AttributeError):
                 pass
         else:
             assert exc is not None
@@ -172,7 +171,8 @@ _T = TypeVar("_T")
 
 # copied from requests.structures
 class CaseInsensitiveDict(MutableMapping[str, _T]):
-    """A case-insensitive ``dict``-like object.
+    """
+    A case-insensitive ``dict``-like object.
 
     Implements all methods and operations of
     ``MutableMapping`` as well as dict's ``copy``. Also
@@ -282,7 +282,7 @@ _RTc = Type[_RT]
 class Registry(ABC, Generic[_ID, _RT]):
     __registry__: MutableMapping[_ID, _RTc]
     __registry_attr_name__: str
-    __registry_root__: Type["Registry"]
+    __registry_root__: Type[Registry]
 
     @classmethod
     def is_abstract(cls) -> bool:

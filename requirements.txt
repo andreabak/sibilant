@@ -1,5 +1,5 @@
-toml
-frozendict
 cbitstruct
+frozendict
 numpy
+toml
 typing-extensions

@@ -3,38 +3,40 @@ from __future__ import annotations
 import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import fields as dataclass_fields, field as dataclass_field, InitVar
+from dataclasses import field as dataclass_field, fields as dataclass_fields
 from typing import (
-    ClassVar,
-    Union,
-    Dict,
-    Type,
-    Optional,
     TYPE_CHECKING,
-    TypeVar,
-    Mapping,
+    ClassVar,
+    Dict,
     List,
+    Mapping,
+    Optional,
     Set,
     Tuple,
-    Sequence,
+    Type,
+    TypeVar,
+    Union,
 )
+
 from typing_extensions import Self
 
+from ..exceptions import SIPParseError
 from ..helpers import (
+    DEFAULT,
     CaseInsensitiveDict,
-    StrValueMixin,
     IntValueMixin,
     ListValueMixin,
     Registry,
-    DEFAULT,
+    StrValueMixin,
     dataclass,
 )
 from ..structures import SIPAddress
-from ..exceptions import SIPParseError
+
 
 if TYPE_CHECKING:
-    from .messages import SIPMethod
     from dataclasses import dataclass
+
+    from .messages import SIPMethod
 
 
 __all__ = [
@@ -234,7 +236,7 @@ class ViaEntry:
             param_name, param_value = (
                 param.split("=", maxsplit=1) if "=" in param else (param, None)
             )
-            if param_name in ("ttl",):
+            if param_name == "ttl":
                 param_value = int(param_value) if param_value is not None else None
             if param_name in ("branch", "maddr", "received", "ttl"):
                 parsed_params[param_name] = param_value

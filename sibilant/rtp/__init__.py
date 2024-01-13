@@ -1,2 +1,2 @@
-from .packet import *
 from .client import *
+from .packet import *

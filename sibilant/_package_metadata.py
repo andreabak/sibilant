@@ -1,8 +1,9 @@
-from email.message import Message as Message
 import importlib.metadata as importlib_metadata
 import os.path as osp
-import toml as toml
 import warnings as warnings
+from email.message import Message as Message
+
+import toml as toml
 
 
 metadata = None

@@ -2,29 +2,31 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import field as dataclass_field
-from typing import Dict, Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
+
 from typing_extensions import Self
 
 from ..exceptions import SDPParseError
-from ..helpers import dataclass, IntValueMixin
-from ..rtp import RTPMediaType, RTPMediaFormat, MediaFlowType
+from ..helpers import IntValueMixin, dataclass
+from ..rtp import MediaFlowType, RTPMediaFormat, RTPMediaType
 from .common import (
+    InactiveFlag,
+    MediaFlowAttribute,
+    RecvOnlyFlag,
+    SDPAttribute,
+    SDPAttributeField,
+    SDPBandwidthField,
+    SDPConnectionField,
+    SDPEncryptionField,
     SDPField,
     SDPInformationField,
-    SDPConnectionField,
-    SDPBandwidthField,
-    SDPEncryptionField,
-    SDPAttribute,
-    UnknownAttribute,
-    RecvOnlyFlag,
-    SendRecvFlag,
-    SendOnlyFlag,
-    InactiveFlag,
-    SDPAttributeField,
-    MediaFlowAttribute,
     SDPSection,
+    SendOnlyFlag,
+    SendRecvFlag,
+    UnknownAttribute,
     ValueAttribute,
 )
+
 
 if TYPE_CHECKING:
     from dataclasses import dataclass
@@ -55,8 +57,7 @@ __all__ = [
 
 
 @dataclass
-class SDPMediaFields(SDPField, ABC, registry=True, registry_attr="_type"):
-    ...
+class SDPMediaFields(SDPField, ABC, registry=True, registry_attr="_type"): ...
 
 
 @dataclass(slots=True)
@@ -158,33 +159,27 @@ class SDPMediaEncryption(SDPEncryptionField, SDPMediaFields):
 
 
 @dataclass
-class SDPMediaAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"):
-    ...
+class SDPMediaAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"): ...
 
 
 @dataclass(slots=True)
-class UnknownMediaAttribute(UnknownAttribute, SDPMediaAttribute):
-    ...
+class UnknownMediaAttribute(UnknownAttribute, SDPMediaAttribute): ...
 
 
 @dataclass(slots=True)
-class RecvOnlyMediaFlag(RecvOnlyFlag, SDPMediaAttribute):
-    ...
+class RecvOnlyMediaFlag(RecvOnlyFlag, SDPMediaAttribute): ...
 
 
 @dataclass(slots=True)
-class SendRecvMediaFlag(SendRecvFlag, SDPMediaAttribute):
-    ...
+class SendRecvMediaFlag(SendRecvFlag, SDPMediaAttribute): ...
 
 
 @dataclass(slots=True)
-class SendOnlyMediaFlag(SendOnlyFlag, SDPMediaAttribute):
-    ...
+class SendOnlyMediaFlag(SendOnlyFlag, SDPMediaAttribute): ...
 
 
 @dataclass(slots=True)
-class InactiveMediaFlag(InactiveFlag, SDPMediaAttribute):
-    ...
+class InactiveMediaFlag(InactiveFlag, SDPMediaAttribute): ...
 
 
 @dataclass(slots=True)

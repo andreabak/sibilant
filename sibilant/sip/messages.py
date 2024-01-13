@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, TYPE_CHECKING, TypeVar, Tuple
+from typing import Any, Dict, Optional, Tuple, TypeVar
 
-from ..helpers import AutoFieldsEnum, SupportsStr
 from ..constants import SUPPORTED_SIP_VERSIONS
-from ..exceptions import SIPUnsupportedVersion, SIPParseError, SIPUnsupportedError
-from ..structures import SIPURI
+from ..exceptions import SIPParseError, SIPUnsupportedError, SIPUnsupportedVersion
+from ..helpers import AutoFieldsEnum, SupportsStr
 from ..sdp import SDPSession
+from ..structures import SIPURI
 from .headers import Headers
-
-if TYPE_CHECKING:
-    pass
 
 
 __all__ = [
@@ -669,7 +666,9 @@ class SIPRequest(SIPMessage):
 
     @property
     def start_line(self) -> str:
-        return f"{self.method} {self.uri.serialize(force_brackets=False)} {self.version}"
+        return (
+            f"{self.method} {self.uri.serialize(force_brackets=False)} {self.version}"
+        )
 
     @classmethod
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
