@@ -18,7 +18,7 @@
   - [x] check if there's a hook/lint to auto-separate typing only imports etc. 
   - [x] other common hooks
   - [x] check/fix from-package relative imports that should be from sub-modules
-  - [ ] convert type annotations to python 3.10+ syntax (PEP585 + PEP604)
+  - [x] convert type annotations to python 3.10+ syntax (PEP585 + PEP604)
 - [ ] improve tests
   - [ ] more unit tests on functions/methods
   - [ ] concrete end-to-end test with real test SIP server

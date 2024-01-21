@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Any, Dict, List, MutableMapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, MutableMapping
 
 from typing_extensions import Self, override
 
@@ -261,7 +261,7 @@ class SDPSessionTimezoneAdjustment(FieldsParserSerializer):
         return cls(**cls.parse_raw_value(raw_value))
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         adjustment_time, offset = raw_value.split(" ")
         return dict(adjustment_time=int(adjustment_time), offset=offset)
 
@@ -284,10 +284,10 @@ class SDPSessionTimezone(SDPSessionFields, FieldsParserSerializer):
     _type = "z"
     _description = "time zone adjustments"
 
-    adjustments: List[SDPSessionTimezoneAdjustment]
+    adjustments: list[SDPSessionTimezoneAdjustment]
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         split_values = raw_value.split(" ")
         if len(split_values) % 2 != 0:
             raise SDPParseError(
@@ -395,17 +395,17 @@ class SDPSession(SDPSection):
     version: SDPSessionVersion
     origin: SDPSessionOrigin
     name: SDPSessionName
-    information: Optional[SDPSessionInformation] = None
-    uri: Optional[SDPSessionURI] = None
-    email: Optional[SDPSessionEmail] = None
-    phone: Optional[SDPSessionPhone] = None
-    connection: Optional[SDPSessionConnection] = None
-    bandwidth: Optional[SDPSessionBandwidth] = None
-    time: List[SDPTime] = dataclass_field(default_factory=list)
-    timezone: Optional[SDPSessionTimezone] = None
-    encryption: Optional[SDPSessionEncryption] = None
-    attributes: List[SDPSessionAttributeField] = dataclass_field(default_factory=list)
-    media: List[SDPMedia] = dataclass_field(default_factory=list)
+    information: SDPSessionInformation | None = None
+    uri: SDPSessionURI | None = None
+    email: SDPSessionEmail | None = None
+    phone: SDPSessionPhone | None = None
+    connection: SDPSessionConnection | None = None
+    bandwidth: SDPSessionBandwidth | None = None
+    time: list[SDPTime] = dataclass_field(default_factory=list)
+    timezone: SDPSessionTimezone | None = None
+    encryption: SDPSessionEncryption | None = None
+    attributes: list[SDPSessionAttributeField] = dataclass_field(default_factory=list)
+    media: list[SDPMedia] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not len(self.time):
@@ -417,7 +417,7 @@ class SDPSession(SDPSection):
         return "application/sdp"
 
     @property
-    def media_flow_type(self) -> Optional[MediaFlowType]:
+    def media_flow_type(self) -> MediaFlowType | None:
         """The media flow type of the session, if any."""
         return get_media_flow_type(self.attributes)
 
@@ -428,9 +428,9 @@ class SDPSession(SDPSection):
         return super()._line_preprocess(line, fields)
 
     @property
-    def connection_address(self) -> Optional[Tuple[str, int]]:
+    def connection_address(self) -> tuple[str, int] | None:
         """The advertised connection address and port to be used for media streams, if any."""
-        addresses: List[Tuple[str, int]] = [
+        addresses: list[tuple[str, int]] = [
             (connection.address, media.media.port)
             for media in self.media
             if (connection := media.connection or self.connection)

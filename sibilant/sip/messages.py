@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any
 
 from typing_extensions import Self, override
 
@@ -105,7 +105,7 @@ class SIPStatus(AutoFieldsEnum):
 
     code: int
     reason: str
-    description: Optional[str]
+    description: str | None
 
     @property
     def enum_value(self) -> Any:  # noqa: D102
@@ -594,20 +594,20 @@ class SIPMessage(ParseableSerializableRaw, ABC):
         self,
         version: str,
         headers: Headers,
-        body: Optional[SupportsStr],
-        origin: Optional[Tuple[str, int]] = None,
-        destination: Optional[Tuple[str, int]] = None,
+        body: SupportsStr | None,
+        origin: tuple[str, int] | None = None,
+        destination: tuple[str, int] | None = None,
     ):
         if version not in SUPPORTED_SIP_VERSIONS:
             raise SIPUnsupportedVersion(f"Unsupported SIP version: {version}")
 
         self.version: str = version
         self.headers: Headers = headers
-        self.body: Optional[SupportsStr] = body
-        self.origin: Optional[Tuple[str, int]] = origin
-        self.destination: Optional[Tuple[str, int]] = destination
+        self.body: SupportsStr | None = body
+        self.origin: tuple[str, int] | None = origin
+        self.destination: tuple[str, int] | None = destination
 
-        self.sdp: Optional[SDPSession] = (
+        self.sdp: SDPSession | None = (
             self.body if isinstance(self.body, SDPSession) else None
         )
 
@@ -618,8 +618,8 @@ class SIPMessage(ParseableSerializableRaw, ABC):
 
     @classmethod
     def parse(  # noqa: D102
-        cls, data: bytes, *, origin: Optional[Tuple[str, int]] = None
-    ) -> Union[Self, SIPMessage]:
+        cls, data: bytes, *, origin: tuple[str, int] | None = None
+    ) -> Self | SIPMessage:
         if cls is SIPMessage:
             if re.search(rb"^SIP/[\d.]+", data):
                 return SIPResponse.parse(data, origin=origin)
@@ -635,7 +635,7 @@ class SIPMessage(ParseableSerializableRaw, ABC):
             headers_raw, *rest = data.split(b"\r\n\r\n", 1)
             body_raw = rest[0] if rest else b""
             start_line, headers_fields = headers_raw.split(b"\r\n", 1)
-            start_line_kwargs: Dict[str, Any] = cls._parse_start_line(start_line)
+            start_line_kwargs: dict[str, Any] = cls._parse_start_line(start_line)
             headers: Headers = Headers.parse(headers_fields)
             body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body, origin=origin)
@@ -645,7 +645,7 @@ class SIPMessage(ParseableSerializableRaw, ABC):
 
     @classmethod
     @abstractmethod
-    def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
+    def _parse_start_line(cls, start_line: bytes) -> dict[str, Any]:
         """Parse start line of the SIP message, return appropriate kwargs for init."""
 
     @classmethod
@@ -701,9 +701,9 @@ class SIPRequest(SIPMessage):
         uri: SIPURI,
         version: str,
         headers: Headers,
-        body: Optional[SupportsStr] = None,
-        origin: Optional[Tuple[str, int]] = None,
-        destination: Optional[Tuple[str, int]] = None,
+        body: SupportsStr | None = None,
+        origin: tuple[str, int] | None = None,
+        destination: tuple[str, int] | None = None,
     ):
         super().__init__(version, headers, body, origin=origin, destination=destination)
         self.method: SIPMethod = method
@@ -718,7 +718,7 @@ class SIPRequest(SIPMessage):
 
     @classmethod
     @override
-    def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
+    def _parse_start_line(cls, start_line: bytes) -> dict[str, Any]:
         method_raw, uri_raw, version = start_line.decode("utf-8").split(" ")
         return dict(
             method=SIPMethod(method_raw), uri=SIPURI.parse(uri_raw), version=version
@@ -749,9 +749,9 @@ class SIPResponse(SIPMessage):
         status: SIPStatus,
         version: str,
         headers: Headers,
-        body: Optional[SupportsStr] = None,
-        origin: Optional[Tuple[str, int]] = None,
-        destination: Optional[Tuple[str, int]] = None,
+        body: SupportsStr | None = None,
+        origin: tuple[str, int] | None = None,
+        destination: tuple[str, int] | None = None,
     ):
         super().__init__(version, headers, body, origin=origin, destination=destination)
         self.status: SIPStatus = status
@@ -763,7 +763,7 @@ class SIPResponse(SIPMessage):
 
     @classmethod
     @override
-    def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
+    def _parse_start_line(cls, start_line: bytes) -> dict[str, Any]:
         version, code, reason = start_line.decode("utf-8").split(" ", 2)
         status: SIPStatus = SIPStatus(int(code))
         status.reason = reason

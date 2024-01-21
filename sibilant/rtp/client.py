@@ -16,14 +16,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Collection,
-    Deque,
-    Dict,
-    List,
     Mapping,
-    Optional,
-    Tuple,
-    Type,
-    Union,
 )
 
 import numpy as np
@@ -77,10 +70,10 @@ class RTPStreamBuffer(RawIOBase):
     def __init__(
         self,
         mode: str,
-        ssrc: Optional[int] = None,
-        profile: Optional[RTPMediaProfiles] = None,
-        initial_sequence: Optional[int] = None,
-        initial_timestamp: Optional[int] = None,
+        ssrc: int | None = None,
+        profile: RTPMediaProfiles | None = None,
+        initial_sequence: int | None = None,
+        initial_timestamp: int | None = None,
         max_pending: int = 10,
         lost_filler: bytes = b"\x00",
     ):
@@ -112,12 +105,12 @@ class RTPStreamBuffer(RawIOBase):
         self._lost_filler: bytes = lost_filler
         self._fill_size: int = self.DEFAULT_SIZE
 
-        self.ssrc: Optional[int] = ssrc
-        self._profile: Optional[RTPMediaProfiles] = profile
+        self.ssrc: int | None = ssrc
+        self._profile: RTPMediaProfiles | None = profile
         self.sequence: int = initial_sequence
         self.timestamp: int = initial_timestamp
-        self._buffer: Deque[bytes] = deque()
-        self._pending: Deque[RTPPacket] = deque()
+        self._buffer: deque[bytes] = deque()
+        self._pending: deque[RTPPacket] = deque()
         self._buf_lock: threading.RLock = threading.RLock()
 
         # TODO: Move or merge these into RTPPacketsStats?
@@ -138,7 +131,7 @@ class RTPStreamBuffer(RawIOBase):
         return self._mode
 
     @property
-    def profile(self) -> Optional[RTPMediaProfiles]:
+    def profile(self) -> RTPMediaProfiles | None:
         """The RTP profile of the buffer, if any."""
         return self._profile
 
@@ -220,8 +213,8 @@ class RTPStreamBuffer(RawIOBase):
         return self._profile.decode(raw_data)
 
     def read_packet(
-        self, packet: Union[RTPPacket, Mapping[str, Any]], size: int = DEFAULT_SIZE
-    ) -> Optional[RTPPacket]:
+        self, packet: RTPPacket | Mapping[str, Any], size: int = DEFAULT_SIZE
+    ) -> RTPPacket | None:
         """
         Read up to size bytes from the buffer, and return a packet with the given values.
         N.B. payload, payload_type, ssrc, sequence, and timestamp will be overwritten.
@@ -265,7 +258,7 @@ class RTPStreamBuffer(RawIOBase):
             packet.payload = data
         return packet
 
-    def write(self, data: Union[bytes, Buffer]) -> int:
+    def write(self, data: bytes | Buffer) -> int:
         """Write data to the buffer, and return the number of bytes written."""
         if isinstance(data, Buffer):
             data = bytes(data)
@@ -376,18 +369,16 @@ class RTPClient:
 
     def __init__(
         self,
-        local_addr: Tuple[str, int],
-        remote_addr: Optional[Tuple[str, int]],
-        media_formats: Union[
-            Collection[Union[RTPMediaFormat, RTPMediaProfiles]],
-            Mapping[int, Union[RTPMediaFormat, RTPMediaProfiles]],
-        ],
+        local_addr: tuple[str, int],
+        remote_addr: tuple[str, int] | None,
+        media_formats: Collection[RTPMediaFormat | RTPMediaProfiles]
+        | Mapping[int, RTPMediaFormat | RTPMediaProfiles],
         *,
         send_delay_factor: float = 1.0,
         pre_bind: bool = True,
     ):
-        self._local_addr: Tuple[str, int] = local_addr
-        self._remote_addr: Optional[Tuple[str, int]] = remote_addr
+        self._local_addr: tuple[str, int] = local_addr
+        self._remote_addr: tuple[str, int] | None = remote_addr
 
         if not isinstance(media_formats, Mapping):
             media_formats = {
@@ -422,20 +413,20 @@ class RTPClient:
 
         self._send_delay_factor: float = send_delay_factor
 
-        self._recv_streams: Dict[int, RTPStreamBuffer] = {}
+        self._recv_streams: dict[int, RTPStreamBuffer] = {}
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
         # FIXME: using two sockets doesn't seem to make a difference, refactor into one?
-        self._socket: Optional[socket.socket] = None
+        self._socket: socket.socket | None = None
 
         if pre_bind:
             self._socket = self._create_socket()
             assert self._socket.family == socket.AF_INET
             self._local_addr = self._socket.getsockname()
 
-        self._recv_thread: Optional[threading.Thread] = None
-        self._send_thread: Optional[threading.Thread] = None
-        self._last_send_time_ns: Optional[int] = None
+        self._recv_thread: threading.Thread | None = None
+        self._send_thread: threading.Thread | None = None
+        self._last_send_time_ns: int | None = None
 
         # TODO: move these to the streams?
         self._recv_stats: RTPPacketsStats = RTPPacketsStats()
@@ -445,13 +436,13 @@ class RTPClient:
         self._closing_event.clear()
 
     @property
-    def remote_addr(self) -> Tuple[str, int]:
+    def remote_addr(self) -> tuple[str, int]:
         """The remote address and port to send packets to."""
         assert self._remote_addr is not None
         return self._remote_addr
 
     @remote_addr.setter
-    def remote_addr(self, value: Optional[Tuple[str, int]]) -> None:
+    def remote_addr(self, value: tuple[str, int] | None) -> None:
         if value is not None and value[1] == 0:
             raise ValueError("Remote RTP port must be non-zero")
         self._remote_addr = value
@@ -477,7 +468,7 @@ class RTPClient:
         self.remote_addr = (self.remote_host, value)
 
     @property
-    def local_addr(self) -> Tuple[str, int]:
+    def local_addr(self) -> tuple[str, int]:
         """The local address and port used by the client to bind the socket."""
         return self._local_addr
 
@@ -593,9 +584,9 @@ class RTPClient:
 
     def __exit__(
         self,
-        exctype: Optional[Type[BaseException]],
-        excinst: Optional[BaseException],
-        exctb: Optional[TracebackType],
+        exctype: type[BaseException] | None,
+        excinst: BaseException | None,
+        exctb: TracebackType | None,
     ) -> None:
         self.stop()
 
@@ -606,7 +597,7 @@ class RTPClient:
         while not self._closing_event.is_set():
             start_time_ns: int = time.perf_counter_ns()
 
-            packet: Optional[RTPPacket] = None
+            packet: RTPPacket | None = None
             try:
                 data, _addr = self._socket.recvfrom(8192)
             except (socket.timeout, BlockingIOError):
@@ -624,7 +615,7 @@ class RTPClient:
 
             time.sleep(1e-6)
 
-    def _recv_packet(self, data: bytes) -> Optional[RTPPacket]:
+    def _recv_packet(self, data: bytes) -> RTPPacket | None:
         """Parses a received packet and writes it to the input stream buffer."""
         packet: RTPPacket = RTPPacket.parse(data)
 
@@ -651,7 +642,7 @@ class RTPClient:
 
         return recvd_packet
 
-    def _recv_to_stream(self, packet: RTPPacket) -> Optional[RTPPacket]:
+    def _recv_to_stream(self, packet: RTPPacket) -> RTPPacket | None:
         """Writes a received RTP packet into the appropriate input stream."""
         if packet.ssrc not in self._recv_streams:
             self._recv_streams[packet.ssrc] = self._create_recv_stream()
@@ -691,7 +682,7 @@ class RTPClient:
         while not self._closing_event.is_set():
             pre_send_time_ns: int = self._last_send_time_ns or time.perf_counter_ns()
 
-            packet: Optional[RTPPacket] = self._send_stream.read_packet(packet_data)
+            packet: RTPPacket | None = self._send_stream.read_packet(packet_data)
             if packet is not None:
                 try:
                     self._socket.sendto(packet.serialize(), self._remote_addr)
@@ -743,7 +734,7 @@ class RTPClient:
         # FIXME: assumes PCMA/PCMU streams, 160 bytes, 20ms packets
         min_offset: int = RTPStreamBuffer.SEQUENCE_MAX * 160
         max_offset: int = 0
-        streams_timeline: List[Tuple[RTPStreamBuffer, int, int]] = []
+        streams_timeline: list[tuple[RTPStreamBuffer, int, int]] = []
         for stream in self._recv_streams.values():
             if (
                 stream.pending_count

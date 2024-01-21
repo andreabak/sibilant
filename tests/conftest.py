@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import enum
 import logging
 import re
@@ -7,12 +9,15 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from types import TracebackType
-from typing import Generic, Iterator, Optional, Tuple, Type, TypeVar
+from typing import TYPE_CHECKING, Generic, Iterator, TypeVar
 
 import dpkt
 import pytest
 from dpkt.utils import inet_to_str
+
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 
 _logger = logging.getLogger(__name__)
@@ -90,9 +95,9 @@ class PacketType(enum.Enum):
 @dataclass(frozen=True)
 class Packet:
     timestamp: float
-    dest: Optional[Dest]
-    src_addr: Tuple[str, int]
-    dst_addr: Tuple[str, int]
+    dest: Dest | None
+    src_addr: tuple[str, int]
+    dst_addr: tuple[str, int]
     type: PacketType
     data: bytes
 
@@ -364,8 +369,8 @@ class MockServer(ABC, Generic[_PT]):
 
     def __exit__(
         self,
-        exctype: Optional[Type[BaseException]],
-        excinst: Optional[BaseException],
-        exctb: Optional[TracebackType],
+        exctype: type[BaseException] | None,
+        excinst: BaseException | None,
+        exctb: TracebackType | None,
     ) -> None:
         self.stop()

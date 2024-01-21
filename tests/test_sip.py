@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import re
 import socket
@@ -5,7 +7,7 @@ import time
 import traceback
 from collections import defaultdict, deque, namedtuple
 from contextlib import contextmanager, nullcontext
-from typing import Mapping, Optional, Sequence
+from typing import Mapping, Sequence
 
 import pytest
 
@@ -216,8 +218,8 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
 
     def __init__(self, *args, wait_recv_timeout: float = 10.0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.last_sent_msg: Optional[SIPMessage] = None
-        self.last_recv_msg: Optional[SIPMessage] = None
+        self.last_sent_msg: SIPMessage | None = None
+        self.last_recv_msg: SIPMessage | None = None
         self.wait_recv_timeout: float = wait_recv_timeout
         self.recv_queue = deque()
         self.sent_count = 0

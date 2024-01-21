@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from abc import ABC
-from typing import List, Optional
 
 from typing_extensions import Self, override
 
@@ -66,7 +65,7 @@ class SDPTimeRepeat(SDPTimeFields):
 
     interval: int
     duration: int
-    offsets: List[int]
+    offsets: list[int]
 
     @classmethod
     @override
@@ -104,4 +103,4 @@ class SDPTime(SDPSection):
     _start_field = SDPTimeTime
 
     time: SDPTimeTime
-    repeat: Optional[SDPTimeRepeat] = None
+    repeat: SDPTimeRepeat | None = None

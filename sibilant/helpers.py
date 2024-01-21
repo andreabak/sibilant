@@ -21,18 +21,13 @@ from typing import (
     Any,
     Callable,
     ClassVar,
-    Dict,
     Generic,
     Iterable,
     Iterator,
-    List,
     Mapping,
     MutableMapping,
-    Optional,
     Pattern,
     Protocol,
-    Tuple,
-    Type,
     TypeVar,
     Union,
     cast,
@@ -90,7 +85,7 @@ class FieldsEnum(enum.Enum):
     and proxies their attributes.
     """
 
-    __wrapped_type__: ClassVar[Type[FieldsEnumDatatype]]
+    __wrapped_type__: ClassVar[type[FieldsEnumDatatype]]
     __allow_unknown__: ClassVar[bool] = False
     __unknown_member_name__: ClassVar[str] = "UNKNOWN"
 
@@ -132,10 +127,10 @@ class FieldsEnum(enum.Enum):
         obj._value_ = enum_value
         return obj
 
-    __new_member__: ClassVar[Callable[[Type[Self], Any], Self]]
+    __new_member__: ClassVar[Callable[[type[Self], Any], Self]]
 
     @classmethod
-    def _missing_(cls, value: Any) -> Optional[FieldsEnum]:
+    def _missing_(cls, value: Any) -> FieldsEnum | None:
         if isinstance(value, cls.__wrapped_type__):
             try:
                 return cls(value.enum_value)
@@ -228,12 +223,10 @@ class CaseInsensitiveDict(MutableMapping[str, _T]):
 
     def __init__(
         self,
-        data: Optional[
-            Union[SupportsKeysAndGetItem[str, _T], Iterable[Tuple[str, _T]]]
-        ] = None,
+        data: SupportsKeysAndGetItem[str, _T] | Iterable[tuple[str, _T]] | None = None,
         **kwargs: _T,
     ) -> None:
-        self._store: OrderedDict[str, Tuple[str, _T]] = OrderedDict()
+        self._store: OrderedDict[str, tuple[str, _T]] = OrderedDict()
         if data is None:
             data = {}
         self.update(data, **kwargs)
@@ -286,7 +279,9 @@ def try_unpack_optional_type(typ_: Any) -> Any:
     """
     args = get_args(typ_)
     origin = get_origin(typ_)
-    if origin is Union and args is not None and len(args) == 2 and type(None) in args:
+    if (origin is Union or origin is getattr(types, "UnionType", Union)) and (
+        args is not None and len(args) == 2 and type(None) in args
+    ):
         return next(a for a in args if a is not type(None))
     return typ_
 
@@ -338,9 +333,9 @@ class Registry(ABC, Generic[_ID, _RT]):
     Abstract subclasses are not registered, only concrete ones are.
     """
 
-    __registry__: MutableMapping[_ID, Type[_RT]]
+    __registry__: MutableMapping[_ID, type[_RT]]
     __registry_attr_name__: str
-    __registry_root__: Type[Registry]
+    __registry_root__: type[Registry]
 
     @classmethod
     def is_abstract(cls) -> bool:
@@ -355,8 +350,8 @@ class Registry(ABC, Generic[_ID, _RT]):
         cls,
         *,
         registry: bool = False,
-        registry_attr: Optional[str] = None,
-        registry_attr_label: Optional[str] = None,
+        registry_attr: str | None = None,
+        registry_attr_label: str | None = None,
         registry_attr_inheritable: bool = True,
         **kwargs: Any,
     ):
@@ -384,7 +379,7 @@ class Registry(ABC, Generic[_ID, _RT]):
 
         # Check registry subclass
         else:
-            registry_id: Optional[str]
+            registry_id: str | None
             try:
                 if registry_attr_inheritable:
                     registry_id = getattr(cls, cls.__registry_attr_name__)
@@ -400,7 +395,7 @@ class Registry(ABC, Generic[_ID, _RT]):
                     f"no {cls.__registry_attr_name__} defined in the class body"
                 )
 
-            conflict_cls: Optional[Type[_RT]] = cls.__registry__.get(registry_id)
+            conflict_cls: type[_RT] | None = cls.__registry__.get(registry_id)
             if conflict_cls is not None:
                 cls_fullname = (cls.__module__, cls.__qualname__)
                 conflict_fullname = (conflict_cls.__module__, conflict_cls.__qualname__)
@@ -413,13 +408,13 @@ class Registry(ABC, Generic[_ID, _RT]):
             cls.__registry__[registry_id] = cls
 
     @classmethod
-    def get_registry(cls) -> types.MappingProxyType[_ID, Type[_RT]]:
+    def get_registry(cls) -> types.MappingProxyType[_ID, type[_RT]]:
         """Get a read-only view of the registry mapping."""
         return types.MappingProxyType(cls.__registry__)
 
     @classmethod
-    def __registry_get_class_for__(cls, registry_id: _ID) -> Type[_RT]:
-        registered_cls: Optional[Type[_RT]] = cls.__registry__.get(registry_id)
+    def __registry_get_class_for__(cls, registry_id: _ID) -> type[_RT]:
+        registered_cls: type[_RT] | None = cls.__registry__.get(registry_id)
         if registered_cls is None:
             raise KeyError(
                 f"No registered {cls.__registry_root__.__name__} subclass found "
@@ -429,7 +424,7 @@ class Registry(ABC, Generic[_ID, _RT]):
 
     @classmethod
     def __registry_new_for__(cls, registry_id: _ID, *args: Any, **kwargs: Any) -> _RT:
-        registered_cls: Type[_RT] = cls.__registry_get_class_for__(registry_id)
+        registered_cls: type[_RT] = cls.__registry_get_class_for__(registry_id)
         # noinspection PyArgumentList
         return cast(_RT, registered_cls(*args, **kwargs))
 
@@ -505,7 +500,7 @@ class FieldsParser(Protocol):
 
     # FIXME: rename to e.g. parse_fields (also in subclasses, like SDP, SIP Headers, etc.)
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:
         """Parse a string value into a mapping of fields values."""
 
 
@@ -524,7 +519,7 @@ class StrValueMixin(FieldsParserSerializer):
     value: str
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         return dict(value=raw_value)
 
     def serialize(self) -> str:  # noqa: D102
@@ -535,10 +530,10 @@ class StrValueMixin(FieldsParserSerializer):
 class OptionalStrValueMixin(FieldsParserSerializer):
     """Mixin like :class:`StrValueMixin`, but that also accepts empty values (`None`)."""
 
-    value: Optional[str]
+    value: str | None
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         return dict(value=raw_value)
 
     def serialize(self) -> str:  # noqa: D102
@@ -552,7 +547,7 @@ class IntValueMixin(FieldsParserSerializer):
     value: int
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         return dict(value=int(raw_value))
 
     def serialize(self) -> str:  # noqa: D102
@@ -573,11 +568,11 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
     Also provides a list-like interface to access the values.
     """
 
-    _values_type: ClassVar[Type[_ST]]  # type: ignore[misc]
+    _values_type: ClassVar[type[_ST]]  # type: ignore[misc]
     _separator: ClassVar[str] = ", "
-    _splitter: ClassVar[Union[str, Pattern[str], None]] = re.compile(r"\s*,\s*")
+    _splitter: ClassVar[str | Pattern[str] | None] = re.compile(r"\s*,\s*")
 
-    values: List[_ST]
+    values: list[_ST]
     raw_value: str = ""
 
     def __post_init__(self) -> None:
@@ -585,10 +580,10 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
             self.raw_value = self._serialize()
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
+    def parse_raw_value(cls, raw_value: str) -> dict[str, Any]:  # noqa: D102
         str_value = raw_value.strip()
         splitter = cls._splitter or cls._separator
-        str_values: List[str]
+        str_values: list[str]
         if isinstance(splitter, str):
             str_values = str_value.split(splitter)
         elif isinstance(splitter, Pattern):
@@ -596,13 +591,13 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
         else:
             raise TypeError(f"Invalid splitter for {cls.__name__}: {splitter!r}")
         vcls = cls._values_type
-        values: List[_ST] = [
+        values: list[_ST] = [
             vcls.parse(value) if issubclass(vcls, Parseable) else vcls(value)
             for value in str_values
         ]
         return dict(values=values, raw_value=raw_value)
 
-    def _serialized_values(self) -> List[str]:
+    def _serialized_values(self) -> list[str]:
         return [
             value.serialize() if isinstance(value, Serializable) else str(value)
             for value in self.values
@@ -623,7 +618,7 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
     @overload
     def __getitem__(self, index: slice) -> MutableSequence[_ST]: ...
 
-    def __getitem__(self, index: Union[int, slice]) -> Union[_ST, MutableSequence[_ST]]:
+    def __getitem__(self, index: int | slice) -> _ST | MutableSequence[_ST]:
         return self.values[index]
 
     @overload
@@ -632,12 +627,10 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
     @overload
     def __setitem__(self, index: slice, value: Iterable[_ST]) -> None: ...
 
-    def __setitem__(
-        self, index: Union[int, slice], value: Union[_ST, Iterable[_ST]]
-    ) -> None:
+    def __setitem__(self, index: int | slice, value: _ST | Iterable[_ST]) -> None:
         self.values[index] = value  # type: ignore[index,assignment]
 
-    def __delitem__(self, index: Union[int, slice]) -> None:
+    def __delitem__(self, index: int | slice) -> None:
         del self.values[index]
 
     def __len__(self) -> int:

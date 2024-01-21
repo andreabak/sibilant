@@ -26,17 +26,11 @@ from typing import (
     Callable,
     Collection,
     Coroutine,
-    List,
     Mapping,
     MutableMapping,
-    Optional,
     Protocol,
     Sequence,
-    Set,
-    Tuple,
-    Type,
     TypeVar,
-    Union,
     runtime_checkable,
 )
 
@@ -81,7 +75,7 @@ def generate_tag() -> str:
     return base64.b32encode(random.getrandbits(36).to_bytes(5, "big")).decode()
 
 
-def generate_call_id(local_host: str, local_port: Optional[int] = None) -> str:
+def generate_call_id(local_host: str, local_port: int | None = None) -> str:
     """Generate a unique call ID for SIP sessions, using UUID and local host name."""
     addr_str = f"{local_host}:{local_port}" if local_port else local_host
     return f"{uuid.uuid4()}@{addr_str}"
@@ -111,7 +105,7 @@ async def discard_statuses(
 _rT = TypeVar("_rT")
 
 
-async def call_later(delay: float, coro: Coroutine[Any, Any, _rT]) -> Optional[_rT]:
+async def call_later(delay: float, coro: Coroutine[Any, Any, _rT]) -> _rT | None:
     """Call a coroutine after a delay."""
     try:
         await asyncio.sleep(delay)
@@ -210,29 +204,29 @@ class SIPDialog(ABC):
         uri: SIPURI,
         to_address: SIPAddress,
         from_address: SIPAddress,
-        to_tag: Optional[str] = None,
-        from_tag: Optional[str] = None,
-        call_id: Optional[str] = None,
-        cseq: Optional[int] = None,
-        response_timeout: Optional[float] = None,
+        to_tag: str | None = None,
+        from_tag: str | None = None,
+        call_id: str | None = None,
+        cseq: int | None = None,
+        response_timeout: float | None = None,
     ):
         self._client: SIPClient = client
 
         self._uri: SIPURI = uri
 
         self._to_address: SIPAddress = to_address
-        self._to_tag: Optional[str] = to_tag
+        self._to_tag: str | None = to_tag
 
         self._from_address: SIPAddress = from_address
-        self._from_tag: Optional[str] = from_tag
+        self._from_tag: str | None = from_tag
 
         self._call_id: str = call_id or generate_call_id(*self._client.local_addr)
         self._cseq: int = cseq if cseq is not None else generate_cseq()
 
-        self._rport: Optional[int] = None
-        self._destination: Optional[Tuple[str, int]] = None
+        self._rport: int | None = None
+        self._destination: tuple[str, int] | None = None
 
-        self._cnonce: Optional[str] = None
+        self._cnonce: str | None = None
 
         self._recv_queue: asyncio.Queue[SIPMessage] = asyncio.Queue()
         self._expecting_msg: bool = False
@@ -342,7 +336,7 @@ class SIPDialog(ABC):
 
     async def _wait_for_message(
         self,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         *,
         discard_trying: bool = True,
         more_discard_statuses: Collection[SIPStatus] = (),
@@ -359,7 +353,7 @@ class SIPDialog(ABC):
             timeout = self._response_timeout
         msg_getter: Callable[[], Awaitable[SIPMessage]] = self._recv_queue.get
         if discard_trying or more_discard_statuses:
-            statuses: Set[SIPStatus] = set(more_discard_statuses)
+            statuses: set[SIPStatus] = set(more_discard_statuses)
             if discard_trying:
                 statuses.add(SIPStatus.TRYING)
             msg_getter = partial(discard_statuses, msg_getter, statuses=statuses)
@@ -452,10 +446,10 @@ class SIPDialog(ABC):
     async def _might_authenticate(
         self,
         sender_factory: Callable[
-            [Optional[hdr.AuthorizationHeader]], Coroutine[Any, Any, SIPRequest]
+            [hdr.AuthorizationHeader | None], Coroutine[Any, Any, SIPRequest]
         ],
         max_attempts: int = 5,
-    ) -> Tuple[SIPRequest, SIPResponse]:
+    ) -> tuple[SIPRequest, SIPResponse]:
         """
         Handle sending a request with an optional authentication challenge.
 
@@ -464,8 +458,8 @@ class SIPDialog(ABC):
             and return the sent request.
         :return: the last sent request and the last received response.
         """
-        authorization: Optional[hdr.AuthorizationHeader] = None
-        response: Optional[SIPMessage] = None
+        authorization: hdr.AuthorizationHeader | None = None
+        response: SIPMessage | None = None
         attempts: int = max_attempts
         while attempts > 0:
             request: SIPRequest = await sender_factory(authorization)
@@ -528,7 +522,7 @@ class SIPRegistration(SIPDialog):
             from_tag=generate_tag(),
         )
 
-        self._reg_refresh_task: Optional[asyncio.Task] = None
+        self._reg_refresh_task: asyncio.Task | None = None
         self._registered: bool = False
 
     @property
@@ -542,7 +536,7 @@ class SIPRegistration(SIPDialog):
     def _register_request(
         self,
         *,
-        authorization: Optional[hdr.AuthorizationHeader] = None,
+        authorization: hdr.AuthorizationHeader | None = None,
         deregister: bool = False,
     ) -> SIPRequest:
         extra_headers = [
@@ -562,7 +556,7 @@ class SIPRegistration(SIPDialog):
 
     async def _register_transaction(self, *, deregister: bool = False) -> None:
         async def sender(
-            authorization: Optional[hdr.AuthorizationHeader],
+            authorization: hdr.AuthorizationHeader | None,
         ) -> SIPRequest:
             request: SIPRequest = self._register_request(
                 authorization=authorization, deregister=deregister
@@ -725,17 +719,17 @@ class SIPCall(SIPDialog):
         self,
         client: SIPClient,
         *,
-        uri: Optional[SIPURI] = None,
-        to: Optional[Union[hdr.ToHeader, SIPAddress]] = None,
-        from_hdr: Optional[hdr.FromHeader] = None,
-        to_address: Optional[SIPAddress] = None,
-        from_address: Optional[SIPAddress] = None,
-        to_tag: Optional[str] = None,
-        from_tag: Optional[str] = None,
-        call_id: Optional[str] = None,
-        cseq: Optional[int] = None,
-        own_side: Optional[CallSide] = None,
-        call_handler_factory: Optional[CallHandlerFactory] = None,
+        uri: SIPURI | None = None,
+        to: hdr.ToHeader | SIPAddress | None = None,
+        from_hdr: hdr.FromHeader | None = None,
+        to_address: SIPAddress | None = None,
+        from_address: SIPAddress | None = None,
+        to_tag: str | None = None,
+        from_tag: str | None = None,
+        call_id: str | None = None,
+        cseq: int | None = None,
+        own_side: CallSide | None = None,
+        call_handler_factory: CallHandlerFactory | None = None,
     ):
         if (to is None) == (to_address is None):
             raise ValueError("Exactly one of `to` or `to_address` must be given")
@@ -792,9 +786,9 @@ class SIPCall(SIPDialog):
 
         self._own_side: CallSide = own_side
         self._state: CallState = CallState.INIT
-        self._received_sdp: Optional[sdp.SDPSession] = None
-        self._sent_sdp: Optional[sdp.SDPSession] = None
-        self._failure_exception: Optional[Exception] = None
+        self._received_sdp: sdp.SDPSession | None = None
+        self._sent_sdp: sdp.SDPSession | None = None
+        self._failure_exception: Exception | None = None
         self._cancel_event: asyncio.Event = asyncio.Event()
 
         if call_handler_factory is None:
@@ -826,17 +820,17 @@ class SIPCall(SIPDialog):
         return self._handler
 
     @property
-    def received_sdp(self) -> Optional[sdp.SDPSession]:
+    def received_sdp(self) -> sdp.SDPSession | None:
         """The SDP session received from the other party during the invite transaction."""
         return self._received_sdp
 
     @property
-    def sent_sdp(self) -> Optional[sdp.SDPSession]:
+    def sent_sdp(self) -> sdp.SDPSession | None:
         """The SDP session sent by the client during the invite transaction."""
         return self._sent_sdp
 
     @property
-    def failure_exception(self) -> Optional[Exception]:
+    def failure_exception(self) -> Exception | None:
         """The exception that caused the call to fail, if any."""
         return self._failure_exception
 
@@ -1018,10 +1012,10 @@ class SIPCall(SIPDialog):
         rtp_profiles_by_port = self._handler.get_rtp_profiles_by_port()
         media_flow: rtp.MediaFlowType = self._handler.get_media_flow()
 
-        invite: Optional[SIPRequest] = None
+        invite: SIPRequest | None = None
 
         async def sender(
-            authorization: Optional[hdr.AuthorizationHeader] = None,
+            authorization: hdr.AuthorizationHeader | None = None,
         ) -> SIPRequest:
             nonlocal invite
             if invite is not None:  # clear previous transaction, reset
@@ -1170,7 +1164,7 @@ class SIPCall(SIPDialog):
         self,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
-        authorization: Optional[hdr.AuthorizationHeader] = None,
+        authorization: hdr.AuthorizationHeader | None = None,
     ) -> SIPRequest:
         """Create an INVITE request."""
         return self._generate_request(
@@ -1184,7 +1178,7 @@ class SIPCall(SIPDialog):
         self,
         invite: SIPRequest,
         *,
-        last_recv_msg: Optional[SIPMessage] = None,
+        last_recv_msg: SIPMessage | None = None,
         copy_via: bool = False,
         **kwargs: Any,
     ) -> SIPRequest:
@@ -1259,7 +1253,7 @@ class SIPCall(SIPDialog):
         self,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
-        authorization: Optional[hdr.AuthorizationHeader] = None,
+        authorization: hdr.AuthorizationHeader | None = None,
     ) -> SIPRequest:
         if self._state != CallState.INIT:
             raise RuntimeError(f"Cannot send INVITE in state {self._state}")
@@ -1276,7 +1270,7 @@ class SIPCall(SIPDialog):
         self,
         invite: SIPRequest,
         *,
-        last_recv_msg: Optional[SIPMessage] = None,
+        last_recv_msg: SIPMessage | None = None,
         copy_via: bool = False,
         **kwargs: Any,
     ) -> SIPRequest:
@@ -1403,11 +1397,11 @@ class SIPClient:  # noqa: PLR0904
         username: str,
         password: str,
         server_host: str,
-        server_port: Optional[int] = None,
+        server_port: int | None = None,
         *,
-        display_name: Optional[str] = None,
-        login: Optional[str] = None,
-        domain: Optional[str] = None,
+        display_name: str | None = None,
+        login: str | None = None,
+        domain: str | None = None,
         local_host: str = "0.0.0.0",
         local_port: int = 0,
         register_attempts: int = 5,
@@ -1422,7 +1416,7 @@ class SIPClient:  # noqa: PLR0904
         self._username: str = username
         self._login: str = login if login is not None else username
         self._password: str = password
-        self._display_name: Optional[str] = display_name
+        self._display_name: str | None = display_name
         self._domain: str = domain if domain is not None else server_host
 
         if server_port is None:
@@ -1431,9 +1425,9 @@ class SIPClient:  # noqa: PLR0904
                 server_port = int(match.group(2))
             else:
                 server_port = DEFAULT_SIP_PORT
-        self._server_addr: Tuple[str, int] = (server_host, server_port)
+        self._server_addr: tuple[str, int] = (server_host, server_port)
         # FIXME: do we even need this local address now? Since we determine automatically our external address (be it interface or public IP)
-        self._local_addr: Tuple[str, int] = (local_host, local_port)
+        self._local_addr: tuple[str, int] = (local_host, local_port)
 
         self.default_response_timeout: float = default_response_timeout
         self._max_forwards: int = max_forwards
@@ -1441,10 +1435,10 @@ class SIPClient:  # noqa: PLR0904
         self.register_attempts: int = register_attempts  # FIXME: unused, implement
         self.register_timeout: float = register_timeout
         self.register_expires: int = register_expires
-        self._register_dialog: Optional[SIPRegistration] = None
+        self._register_dialog: SIPRegistration | None = None
 
         self._keep_alive_interval: float = keep_alive_interval
-        self._keep_alive_known_addresses: Set[Tuple[str, int]] = set()
+        self._keep_alive_known_addresses: set[tuple[str, int]] = set()
 
         self._dialogs: MutableMapping[str, SIPDialog] = {}
         """Map of call IDs to SIP sessions."""
@@ -1456,15 +1450,15 @@ class SIPClient:  # noqa: PLR0904
             target=self._run_event_loop,
             name=f"{self.__class__.__name__}._run_event_loop-{id(self)}",
         )
-        self._pending_futures: List[Union[asyncio.Future, concurrent.futures.Future]]
+        self._pending_futures: list[asyncio.Future | concurrent.futures.Future]
         self._pending_futures = []
 
-        self._socket: Optional[socket.socket] = None
+        self._socket: socket.socket | None = None
         self._socket_lock: threading.Lock = threading.Lock()
 
         self._registered: bool = False
-        self._recv_thread: Optional[threading.Thread] = None
-        self._recv_msg_hashes: Set[bytes] = set()
+        self._recv_thread: threading.Thread | None = None
+        self._recv_msg_hashes: set[bytes] = set()
         self._recv_ignore_count: int = 0
 
         self._closed: bool = True
@@ -1472,7 +1466,7 @@ class SIPClient:  # noqa: PLR0904
         self._closing_event.clear()
 
     @property
-    def server_addr(self) -> Tuple[str, int]:
+    def server_addr(self) -> tuple[str, int]:
         """The address and port of the SIP server used by the client."""
         return self._server_addr
 
@@ -1487,7 +1481,7 @@ class SIPClient:  # noqa: PLR0904
         return self._server_addr[1]
 
     @property
-    def local_addr(self) -> Tuple[str, int]:
+    def local_addr(self) -> tuple[str, int]:
         """The local address and port to which the client's socket is bound."""
         return self._local_addr
 
@@ -1507,7 +1501,7 @@ class SIPClient:  # noqa: PLR0904
         return get_external_ip_for_dest(self.server_host)
 
     @property
-    def own_addr_to_server(self) -> Tuple[str, int]:
+    def own_addr_to_server(self) -> tuple[str, int]:
         """The IP address and port of the client as seen by the SIP server."""
         # FIXME: if the connection is over NAT the port will be different as well!
         #        this is usually okay, due to the rport mechanism, but we should still
@@ -1620,7 +1614,7 @@ class SIPClient:  # noqa: PLR0904
         self._dialogs[dialog.call_id] = dialog
 
     def _untrack_dialog(
-        self, dialog: Optional[SIPDialog], call_id: Optional[str] = None
+        self, dialog: SIPDialog | None, call_id: str | None = None
     ) -> None:
         if dialog is None and call_id is None:
             raise ValueError("Either 'dialog' or 'call_id' must be specified")
@@ -1698,9 +1692,9 @@ class SIPClient:  # noqa: PLR0904
 
     def __exit__(
         self,
-        exctype: Optional[Type[BaseException]],
-        excinst: Optional[BaseException],
-        exctb: Optional[TracebackType],
+        exctype: type[BaseException] | None,
+        excinst: BaseException | None,
+        exctb: TracebackType | None,
     ) -> None:
         self.stop()
 
@@ -1730,7 +1724,7 @@ class SIPClient:  # noqa: PLR0904
             not (self._closing_event.is_set() or terminate_asap)
             or self._pending_futures
         ):
-            fut: Union[asyncio.Future, concurrent.futures.Future]
+            fut: asyncio.Future | concurrent.futures.Future
             for fut in list(self._pending_futures):
                 if fut.done():
                     if not fut.cancelled() and (exc := fut.exception()) is not None:
@@ -1776,21 +1770,17 @@ class SIPClient:  # noqa: PLR0904
         else:
             _logger.error(message)
 
-    def _track_future(
-        self, future: Union[asyncio.Future, concurrent.futures.Future]
-    ) -> None:
+    def _track_future(self, future: asyncio.Future | concurrent.futures.Future) -> None:
         if hasattr(future, "get_loop") and future.get_loop() is not self._event_loop:
             raise RuntimeError("Cannot track future from another event loop")
         self._pending_futures.append(future)
 
-    def _schedule(
-        self, coro: Awaitable
-    ) -> Union[asyncio.Future, concurrent.futures.Future]:
+    def _schedule(self, coro: Awaitable) -> asyncio.Future | concurrent.futures.Future:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._track_future(future)
         return future
 
-    def _recv_msg(self, timeout: Optional[float] = None) -> SIPMessage:
+    def _recv_msg(self, timeout: float | None = None) -> SIPMessage:
         assert self._socket is not None
         start_time: float = time.monotonic()
         while not timeout or (time.monotonic() - start_time < timeout):
@@ -1836,7 +1826,7 @@ class SIPClient:  # noqa: PLR0904
             time.sleep(1e-6)
 
     async def _handle_message(self, message: SIPMessage) -> None:
-        call_id_hdr: Optional[hdr.CallIDHeader] = message.headers.get("Call-ID")
+        call_id_hdr: hdr.CallIDHeader | None = message.headers.get("Call-ID")
         if call_id_hdr is None:
             _logger.warning(f"Discarding SIP message without Call-ID: {message!r}")
             return
@@ -1865,7 +1855,7 @@ class SIPClient:  # noqa: PLR0904
     def _send_bytes(
         self,
         data_raw: bytes,
-        addr: Optional[Tuple[str, int]] = None,
+        addr: tuple[str, int] | None = None,
         *,
         send_wait: bool = False,
     ) -> None:
@@ -1930,8 +1920,8 @@ class SIPClient:  # noqa: PLR0904
     # TODO: should this be async? or should it be blocking?
     def invite(
         self,
-        contact: Union[SIPAddress, SIPURI, str],
-        call_handler_factory: Optional[CallHandlerFactory] = None,
+        contact: SIPAddress | SIPURI | str,
+        call_handler_factory: CallHandlerFactory | None = None,
     ) -> SIPCall:
         """
         Start a new SIP call (INVITE request in UAC role).
@@ -2006,7 +1996,7 @@ class SIPClient:  # noqa: PLR0904
         :return: the generated Route header.
         """
         # TODO: review correctness of this method logic
-        route: List[hdr.Contact] = []
+        route: list[hdr.Contact] = []
         if (record_route_hdr := message.headers.get("Record-Route")) is not None:
             route = list(reversed(record_route_hdr.contacts))
         return hdr.RouteHeader(route)
@@ -2019,14 +2009,14 @@ class SIPClient:  # noqa: PLR0904
         call_id: str,
         cseq: int,
         cseq_method: SIPMethod,
-        via_hdr: Optional[hdr.ViaHeader] = None,
+        via_hdr: hdr.ViaHeader | None = None,
         is_initial: bool = False,
-        contact: Optional[hdr.Contact] = None,
-        from_tag: Optional[str] = None,
-        to_tag: Optional[str] = None,
-        allow: Optional[Sequence[str]] = None,
-        content_type: Optional[str] = None,
-        body: Optional[SupportsStr] = None,
+        contact: hdr.Contact | None = None,
+        from_tag: str | None = None,
+        to_tag: str | None = None,
+        allow: Sequence[str] | None = None,
+        content_type: str | None = None,
+        body: SupportsStr | None = None,
     ) -> hdr.Headers:
         """
         Prepare the headers for a SIP message.
@@ -2084,24 +2074,24 @@ class SIPClient:  # noqa: PLR0904
     def generate_request(  # noqa: PLR0913
         self,
         method: SIPMethod,
-        uri: Optional[SIPURI] = None,
+        uri: SIPURI | None = None,
         *,
         from_address: SIPAddress,
         to_address: SIPAddress,
         call_id: str,
         cseq: int,
-        cseq_method: Optional[SIPMethod] = None,
-        via_hdr: Optional[hdr.ViaHeader] = None,
+        cseq_method: SIPMethod | None = None,
+        via_hdr: hdr.ViaHeader | None = None,
         is_initial: bool = False,
-        contact: Optional[hdr.Contact] = None,
-        from_tag: Optional[str] = None,
-        to_tag: Optional[str] = None,
-        allow: Optional[Sequence[str]] = None,
-        content_type: Optional[str] = None,
+        contact: hdr.Contact | None = None,
+        from_tag: str | None = None,
+        to_tag: str | None = None,
+        allow: Sequence[str] | None = None,
+        content_type: str | None = None,
         extra_headers: Sequence[hdr.Header] = (),
-        body: Optional[SupportsStr] = None,
-        origin: Optional[Tuple[str, int]] = None,
-        destination: Optional[Tuple[str, int]] = None,
+        body: SupportsStr | None = None,
+        origin: tuple[str, int] | None = None,
+        destination: tuple[str, int] | None = None,
     ) -> SIPRequest:
         """
         Generate a SIP request with the given method and headers arguments.
@@ -2153,15 +2143,15 @@ class SIPClient:  # noqa: PLR0904
         call_id: str,
         cseq: int,
         cseq_method: SIPMethod,
-        contact: Optional[hdr.Contact] = None,
-        from_tag: Optional[str] = None,
-        to_tag: Optional[str] = None,
-        allow: Optional[Sequence[str]] = None,
-        content_type: Optional[str] = None,
+        contact: hdr.Contact | None = None,
+        from_tag: str | None = None,
+        to_tag: str | None = None,
+        allow: Sequence[str] | None = None,
+        content_type: str | None = None,
         extra_headers: Sequence[hdr.Header] = (),
-        body: Optional[SupportsStr] = None,
-        origin: Optional[Tuple[str, int]] = None,
-        destination: Optional[Tuple[str, int]] = None,
+        body: SupportsStr | None = None,
+        origin: tuple[str, int] | None = None,
+        destination: tuple[str, int] | None = None,
     ) -> SIPResponse:
         """
         Generate a SIP response with the given status code and headers arguments.
@@ -2207,7 +2197,7 @@ class SIPClient:  # noqa: PLR0904
         :return: the generated response.
         """
 
-        def set_from_request(kwarg: str, header: str, attr: Optional[str]) -> None:
+        def set_from_request(kwarg: str, header: str, attr: str | None) -> None:
             nonlocal kwargs
             if kwarg not in kwargs:
                 req_value = request.headers.get(header)
@@ -2226,7 +2216,7 @@ class SIPClient:  # noqa: PLR0904
         set_from_request("cseq_method", "CSeq", "method")
         kwargs.setdefault("contact", self._contact)
 
-        extra_headers: List[hdr.Header] = list(kwargs.pop("extra_headers", ()))
+        extra_headers: list[hdr.Header] = list(kwargs.pop("extra_headers", ()))
         # check if "Route" is in extra_headers, if not, set it from the request
         # FIXME: apparently this should not happen. Instead we should echo the Record-Route headers
         # if not any(isinstance(h, hdr.RouteHeader) for h in extra_headers):
@@ -2244,9 +2234,9 @@ class SIPClient:  # noqa: PLR0904
         response: SIPResponse,
         *,
         is_proxy: bool = False,
-        cnonce: Optional[str] = None,
-        nc: Optional[int] = None,
-    ) -> Union[hdr.AuthorizationHeader, hdr.ProxyAuthorizationHeader]:
+        cnonce: str | None = None,
+        nc: int | None = None,
+    ) -> hdr.AuthorizationHeader | hdr.ProxyAuthorizationHeader:
         """
         Generate an authorization header for the given response.
 
@@ -2264,9 +2254,9 @@ class SIPClient:  # noqa: PLR0904
         authenticate_hdr_name: str = (
             "WWW-Authenticate" if not is_proxy else "Proxy-Authenticate"
         )
-        authenticate_hdr: Union[
-            hdr.WWWAuthenticateHeader, hdr.ProxyAuthenticateHeader, None
-        ] = response.headers.get(authenticate_hdr_name)
+        authenticate_hdr: (
+            hdr.WWWAuthenticateHeader | hdr.ProxyAuthenticateHeader | None
+        ) = response.headers.get(authenticate_hdr_name)
         if authenticate_hdr is None:
             raise SIPBadResponse(f"No {authenticate_hdr_name} header in response")
         realm = authenticate_hdr.realm
@@ -2314,7 +2304,7 @@ class SIPClient:  # noqa: PLR0904
             algorithm="MD5",
         )
 
-    def generate_capabilities_headers(self) -> List[hdr.Header]:
+    def generate_capabilities_headers(self) -> list[hdr.Header]:
         """Generate the headers for the OPTIONS request."""
         return [
             hdr.AllowHeader(list(self.allowed_methods)),
@@ -2328,7 +2318,7 @@ class SIPClient:  # noqa: PLR0904
         session_id: int,
         rtp_profiles_by_port: Mapping[int, Sequence[rtp.RTPMediaProfiles]],
         media_flow: rtp.MediaFlowType,
-        remote_address: Optional[Tuple[str, int]] = None,
+        remote_address: tuple[str, int] | None = None,
     ) -> sdp.SDPSession:
         """
         Generate an SDP session for the client with the given RTP parameters.
@@ -2344,16 +2334,16 @@ class SIPClient:  # noqa: PLR0904
 
         own_external_ip: str = get_external_ip_for_dest(remote_address[0])
 
-        medias: List[sdp.SDPMedia] = []
+        medias: list[sdp.SDPMedia] = []
         for port, profiles in rtp_profiles_by_port.items():
-            media_type_set: Set[rtp.RTPMediaType] = {p.media_type for p in profiles}
+            media_type_set: set[rtp.RTPMediaType] = {p.media_type for p in profiles}
             if len(media_type_set) != 1:
                 raise ValueError("All RTP profiles must have the same media type")
             media_type: rtp.RTPMediaType = media_type_set.pop()
             if media_type != rtp.RTPMediaType.AUDIO:
                 raise SIPUnsupportedError(f"Unsupported media type: {media_type}")
 
-            media_attributes: List[sdp.SDPMediaAttribute] = [
+            media_attributes: list[sdp.SDPMediaAttribute] = [
                 sdp.PTimeAttribute(20),
                 sdp.MaxPTimeAttribute(150),
                 sdp.get_media_flow_attribute(media_flow),

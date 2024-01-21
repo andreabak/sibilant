@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass, field as dataclass_field
-from typing import Dict, List, Optional, Sequence
+from typing import Sequence
 
 from typing_extensions import Self, override
 
@@ -75,9 +75,9 @@ class SDPMediaMedia(SDPMediaFields):
 
     media: str
     port: int
-    number_of_ports: Optional[int]
+    number_of_ports: int | None
     protocol: str
-    formats: List[int]
+    formats: list[int]
 
     def __post_init__(self) -> None:
         if self.port % 2 != 0:
@@ -251,10 +251,10 @@ class RTPMapAttribute(SDPMediaAttribute):
     payload_type: int
     encoding_name: str
     clock_rate: int
-    encoding_parameters: Optional[str] = None
+    encoding_parameters: str | None = None
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:  # noqa: D102
         # encoding parameters are optional
         if raw_value is None:
             raise SDPParseError("rtpmap attribute requires a value")
@@ -291,7 +291,7 @@ class FMTPAttribute(SDPMediaAttribute):
     format_specific_parameters: str
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:  # noqa: D102
         if raw_value is None:
             raise SDPParseError("fmtp attribute requires a value")
         format_, format_specific_parameters = raw_value.split(" ", maxsplit=1)
@@ -331,9 +331,9 @@ def get_media_flow_attribute(flow_type: MediaFlowType) -> SDPMediaAttribute:
 
 def get_media_flow_type(
     attributes: Sequence[SDPAttributeField],
-) -> Optional[MediaFlowType]:
+) -> MediaFlowType | None:
     """Return the media flow type from the given media attributes."""
-    media_flow_type: Optional[MediaFlowType] = None
+    media_flow_type: MediaFlowType | None = None
     for attribute_field in attributes:
         if isinstance(attribute_field.attribute, MediaFlowAttribute):
             if media_flow_type is not None:
@@ -350,13 +350,13 @@ class SDPMedia(SDPSection):
     _start_field = SDPMediaMedia
 
     media: SDPMediaMedia
-    title: Optional[SDPMediaTitle] = None
-    connection: Optional[SDPMediaConnection] = None
-    bandwidth: Optional[SDPMediaBandwidth] = None
-    encryption: Optional[SDPMediaEncryption] = None
-    attributes: List[SDPMediaAttributeField] = dataclass_field(default_factory=list)
+    title: SDPMediaTitle | None = None
+    connection: SDPMediaConnection | None = None
+    bandwidth: SDPMediaBandwidth | None = None
+    encryption: SDPMediaEncryption | None = None
+    attributes: list[SDPMediaAttributeField] = dataclass_field(default_factory=list)
 
-    _media_formats: List[RTPMediaFormat] = dataclass_field(default_factory=list)
+    _media_formats: list[RTPMediaFormat] = dataclass_field(default_factory=list)
 
     def __post_init__(self) -> None:
         # make sure number of ports within media and connection match
@@ -371,23 +371,23 @@ class SDPMedia(SDPSection):
         self._media_formats = self._build_media_formats()
 
     @property
-    def media_flow_type(self) -> Optional[MediaFlowType]:
+    def media_flow_type(self) -> MediaFlowType | None:
         """Media flow type, extracted from the media attributes."""
         return get_media_flow_type(self.attributes)
 
     # FIXME: media formats can be out-of date if something in the class changes. generate on the fly?
     @property
-    def media_formats(self) -> List[RTPMediaFormat]:
+    def media_formats(self) -> list[RTPMediaFormat]:
         """List of media formats, extracted from the media attributes."""
         return self._media_formats
 
-    def _build_media_formats(self) -> List[RTPMediaFormat]:
-        formats: List[RTPMediaFormat] = []
+    def _build_media_formats(self) -> list[RTPMediaFormat]:
+        formats: list[RTPMediaFormat] = []
         if self.media.protocol in {"RTP/AVP", "RTP/SAVP"}:
             # collect rtpmap and fmtp attributes with the same id as the media formats
             known_formats = {int(f) for f in self.media.formats}
-            rtpmap_map: Dict[int, RTPMapAttribute] = {}
-            fmtp_map: Dict[int, FMTPAttribute] = {}
+            rtpmap_map: dict[int, RTPMapAttribute] = {}
+            fmtp_map: dict[int, FMTPAttribute] = {}
             for attribute_field in self.attributes:
                 attribute = attribute_field.attribute
                 if isinstance(attribute, RTPMapAttribute):
@@ -412,8 +412,8 @@ class SDPMedia(SDPSection):
 
             rtpmap: RTPMapAttribute
             for rtpmap in rtpmap_map.values():
-                fmtp: Optional[FMTPAttribute] = fmtp_map.get(rtpmap.payload_type)
-                channels: Optional[int] = None
+                fmtp: FMTPAttribute | None = fmtp_map.get(rtpmap.payload_type)
+                channels: int | None = None
                 try:  # noqa: SIM105
                     channels = int(rtpmap.encoding_parameters)  # type: ignore[arg-type]
                 except (ValueError, TypeError):

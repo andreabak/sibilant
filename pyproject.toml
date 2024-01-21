@@ -57,9 +57,6 @@ max-public-methods = 25
 max-statements = 70
 allow-dunder-method-names = ["__registry_new_for__", "__registry_get_class_for__"]
 
-[tool.ruff.pyupgrade]
-keep-runtime-typing = true
-
 [tool.mypy]
 show_error_codes = true
 ignore_missing_imports = true

@@ -1,13 +1,15 @@
+from __future__ import annotations
+
 import importlib.metadata as importlib_metadata
 import warnings
 from email.message import Message
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence, Union
+from typing import Any, Callable, Mapping, Sequence
 
 import toml
 
 
-metadata: Union[Message, Mapping[str, Any], None] = None
+metadata: Message | Mapping[str, Any] | None = None
 # FIXME: give precedence to pyproject.toml metadata for correct info in local testing
 try:
     metadata = importlib_metadata.metadata(__package__ or __name__)
@@ -26,9 +28,7 @@ except importlib_metadata.PackageNotFoundError:
 
 def get_metadata(
     distinfo_key: str,
-    toml_getter: Union[
-        str, int, Sequence[Union[str, int]], Callable[[Mapping[str, Any]], Any]
-    ],
+    toml_getter: str | int | Sequence[str | int] | Callable[[Mapping[str, Any]], Any],
 ) -> Any:
     global metadata
     if metadata is None:

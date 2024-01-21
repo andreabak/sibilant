@@ -8,13 +8,8 @@ from dataclasses import InitVar, dataclass
 from typing import (
     Any,
     ClassVar,
-    Deque,
-    Dict,
     List,
     MutableMapping,
-    Optional,
-    Tuple,
-    Type,
     Union,
     cast,
     get_origin,
@@ -119,8 +114,8 @@ class SDPAttribute(
 ):
     """Abstract base dataclass for SDP attributes."""
 
-    _name: ClassVar[Union[str, DefaultType]]
-    _is_flag: ClassVar[Optional[bool]] = None
+    _name: ClassVar[str | DefaultType]
+    _is_flag: ClassVar[bool | None] = None
 
     @property
     def name(self) -> str:
@@ -140,7 +135,7 @@ class SDPAttribute(
     @classmethod
     def parse(cls, raw_data: str) -> Self:  # noqa: D102
         name: str
-        raw_value: Optional[str]
+        raw_value: str | None
         name, raw_value = (
             raw_data.split(":", 1) if ":" in raw_data else (raw_data, None)  # type: ignore[assignment]
         )
@@ -161,7 +156,7 @@ class SDPAttribute(
             raise TypeError(
                 f"Unknown SDP attribute {name}, and no default attribute class is defined"
             )
-        attr_cls: Type[SDPAttribute] = cls.__registry_get_class_for__(
+        attr_cls: type[SDPAttribute] = cls.__registry_get_class_for__(
             registry_name if is_known_attribute else DEFAULT
         )
 
@@ -169,7 +164,7 @@ class SDPAttribute(
 
     @classmethod
     @abstractmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:
         """
         Parse a raw value into an instance of this attribute class.
 
@@ -194,7 +189,7 @@ class FlagAttribute(SDPAttribute, ABC):
     _is_flag: ClassVar[bool] = True
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:  # noqa: D102
         return cls()
 
     def serialize(self) -> str:  # noqa: D102
@@ -208,7 +203,7 @@ class ValueAttribute(SDPAttribute, ABC):
     value: Any
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:
         return cls(value=raw_value)
 
 
@@ -226,7 +221,7 @@ class UnknownAttribute(OptionalStrValueMixin, SDPAttribute, ABC):
         return self.attribute
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
+    def from_raw_value(cls, name: str, raw_value: str | None) -> Self:  # noqa: D102
         return cls(attribute=name, value=raw_value)
 
 
@@ -295,8 +290,8 @@ class SDPConnectionField(SDPField, ABC):
     nettype: str
     addrtype: str
     address: str
-    ttl: Optional[int] = None
-    number_of_addresses: Optional[int] = None
+    ttl: int | None = None
+    number_of_addresses: int | None = None
 
     @property
     def connection_address(self) -> str:
@@ -380,13 +375,13 @@ class SDPEncryptionField(SDPField, ABC):
     _type = "k"
 
     method: str
-    key: Optional[str] = None
+    key: str | None = None
 
     @classmethod
     @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         method: str
-        key: Optional[str]
+        key: str | None
         method, key = raw_value.split(":") if ":" in raw_value else (raw_value, None)  # type: ignore[assignment]
         return cls(method=method, key=key)
 
@@ -399,7 +394,7 @@ class SDPAttributeField(SDPField, ABC):
     """Abstract base dataclass for SDP attribute fields."""
 
     _type = "a"
-    _attribute_cls: ClassVar[Type[SDPAttribute]]
+    _attribute_cls: ClassVar[type[SDPAttribute]]
 
     attribute: SDPAttribute
 
@@ -434,15 +429,15 @@ class SDPAttributeField(SDPField, ABC):
 class SDPSection(ParseableSerializableRaw, ABC):
     """Abstract base dataclass for SDP sections."""
 
-    _fields_base: ClassVar[Type[SDPField]]
-    _start_field: ClassVar[Type[SDPField]]
+    _fields_base: ClassVar[type[SDPField]]
+    _start_field: ClassVar[type[SDPField]]
 
     # mapping of {sdptype: (field_name, field_type, wrapped_type), ...}
-    _sdp_fields_map: ClassVar[Dict[str, Tuple[str, Any, type]]]
-    _subsections_map: ClassVar[Dict[str, Type[SDPSection]]]
+    _sdp_fields_map: ClassVar[dict[str, tuple[str, Any, type]]]
+    _subsections_map: ClassVar[dict[str, type[SDPSection]]]
 
     @classmethod
-    def _reveal_wrapped_type(cls, field_type: Any) -> Type:
+    def _reveal_wrapped_type(cls, field_type: Any) -> type:
         if isinstance(field_type, str) and field_type in globals():
             field_type = globals()[field_type]
         if get_origin(field_type) in {list, List}:
@@ -461,8 +456,8 @@ class SDPSection(ParseableSerializableRaw, ABC):
             # skip ClassVar and InitVar fields
             if get_origin(field_type) in {ClassVar, InitVar}:
                 continue
-            wrapped_type: Type = cls._reveal_wrapped_type(field_type)
-            sdp_type: Optional[str] = None
+            wrapped_type: type = cls._reveal_wrapped_type(field_type)
+            sdp_type: str | None = None
             if issubclass(wrapped_type, SDPField):
                 sdp_type = wrapped_type._type  # noqa: SLF001
             elif issubclass(wrapped_type, SDPSection):
@@ -491,7 +486,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
         return line
 
     @classmethod
-    def from_lines(cls, lines: Deque[str], *, is_subsection: bool = False) -> Self:
+    def from_lines(cls, lines: deque[str], *, is_subsection: bool = False) -> Self:
         """
         Parse an SDP section from a list of lines.
 
@@ -499,11 +494,11 @@ class SDPSection(ParseableSerializableRaw, ABC):
         :param is_subsection: whether the section is a subsection of another section.
         :return: the parsed SDP section.
         """
-        fields: Dict[str, Any] = {}
+        fields: dict[str, Any] = {}
         while lines:
             line = lines.popleft()
-            value: Optional[Union[SDPField, SDPSection]] = None
-            sdp_type: Optional[str] = None
+            value: SDPField | SDPSection | None = None
+            sdp_type: str | None = None
             for sdp_type, subsection_type in cls._subsections_map.items():
                 if line.startswith(sdp_type + "="):
                     lines.appendleft(line)
@@ -539,7 +534,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
         """Parse an SDP session from a string."""
         sdp_lines = raw_value.decode("utf-8").split("\r\n")
 
-        to_process_lines: Deque[str] = deque(
+        to_process_lines: deque[str] = deque(
             stripped_line for line in sdp_lines if (stripped_line := line.strip())
         )
         return cls.from_lines(to_process_lines)
@@ -550,7 +545,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
 
     def __str__(self) -> str:
         """Serialize the SDP section to a string."""
-        serialized_fields: List[str] = []
+        serialized_fields: list[str] = []
         for field_name, field_type, _ in self._sdp_fields_map.values():
             value = getattr(self, field_name)
             if value is None:

@@ -14,13 +14,8 @@ from typing import (
     Any,
     Callable,
     Collection,
-    Dict,
     Mapping,
-    Optional,
     Sequence,
-    Tuple,
-    Type,
-    Union,
 )
 
 from sibilant import rtp, sip
@@ -75,7 +70,7 @@ class VoIPCall(sip.CallHandler):
 
         self._media_flow: rtp.MediaFlowType = media_flow
 
-        remote_addr: Optional[Tuple[str, int]] = None
+        remote_addr: tuple[str, int] | None = None
         if self._sip_call.received_sdp is not None:
             remote_addr = self._sip_call.received_sdp.connection_address
         self._rtp_client = rtp.RTPClient(
@@ -158,7 +153,7 @@ class VoIPCall(sip.CallHandler):
             self.teardown_call(self._sip_call)
         return result
 
-    def wait_answer(self, timeout: Optional[float] = None) -> bool:
+    def wait_answer(self, timeout: float | None = None) -> bool:
         """
         Wait for the call to be answered.
 
@@ -312,18 +307,18 @@ class VoIPPhone:
         username: str,
         password: str,
         server_host: str,
-        server_port: Optional[int] = None,
+        server_port: int | None = None,
         *,
-        display_name: Optional[str] = None,
-        login: Optional[str] = None,
-        domain: Optional[str] = None,
+        display_name: str | None = None,
+        login: str | None = None,
+        domain: str | None = None,
         local_host: str = "0.0.0.0",
         local_port: int = 0,
-        on_incoming_call: Optional[IncomingCallCallback] = None,
-        on_call_established: Optional[EstablishedCallCallback] = None,
-        on_call_terminated: Optional[TerminatedCallCallback] = None,
-        sip_kwargs: Optional[Mapping[str, Any]] = None,
-        rtp_kwargs: Optional[Mapping[str, Any]] = None,
+        on_incoming_call: IncomingCallCallback | None = None,
+        on_call_established: EstablishedCallCallback | None = None,
+        on_call_terminated: TerminatedCallCallback | None = None,
+        sip_kwargs: Mapping[str, Any] | None = None,
+        rtp_kwargs: Mapping[str, Any] | None = None,
     ):
         self._rtp_kwargs: Mapping[str, Any] = rtp_kwargs or {}
         self._sip_client: sip.SIPClient = sip.SIPClient(
@@ -340,13 +335,11 @@ class VoIPPhone:
             **(sip_kwargs or {}),
         )
 
-        self.on_incoming_call: Optional[IncomingCallCallback] = on_incoming_call
-        self.on_call_established: Optional[EstablishedCallCallback] = (
-            on_call_established
-        )
-        self.on_call_terminated: Optional[TerminatedCallCallback] = on_call_terminated
+        self.on_incoming_call: IncomingCallCallback | None = on_incoming_call
+        self.on_call_established: EstablishedCallCallback | None = on_call_established
+        self.on_call_terminated: TerminatedCallCallback | None = on_call_terminated
 
-        self._calls: Dict[str, VoIPCall] = {}
+        self._calls: dict[str, VoIPCall] = {}
         """Mapping of currently active calls, by call ID."""
 
         self._state: PhoneState = PhoneState.INACTIVE
@@ -395,9 +388,9 @@ class VoIPPhone:
 
     def __exit__(
         self,
-        exctype: Optional[Type[BaseException]],
-        excinst: Optional[BaseException],
-        exctb: Optional[TracebackType],
+        exctype: type[BaseException] | None,
+        excinst: BaseException | None,
+        exctb: TracebackType | None,
     ) -> None:
         self.stop()
 
@@ -462,7 +455,7 @@ class VoIPPhone:
 
     def call(
         self,
-        contact: Union[sip.SIPAddress, sip.SIPURI, str],
+        contact: sip.SIPAddress | sip.SIPURI | str,
         media_flow: rtp.MediaFlowType = rtp.MediaFlowType.SENDRECV,
     ) -> VoIPCall:
         """

@@ -12,10 +12,6 @@ from typing import (
     Callable,
     ClassVar,
     Iterator,
-    List,
-    Optional,
-    Type,
-    Union,
     cast,
 )
 
@@ -50,15 +46,15 @@ class RTPMediaType(enum.Enum):
 class RTPMediaFormat(FieldsEnumDatatype):
     """Represents an RTP media format type."""
 
-    payload_type: Union[int, str]
+    payload_type: int | str
     media_type: RTPMediaType
     encoding_name: str
     clock_rate: int
-    channels: Optional[int] = None
-    format_specific_parameters: Optional[str] = None
+    channels: int | None = None
+    format_specific_parameters: str | None = None
 
-    codec_type: Optional[Type[Codec]] = None
-    codec: Optional[Codec] = None
+    codec_type: type[Codec] | None = None
+    codec: Codec | None = None
 
     def __post_init__(self) -> None:
         if self.codec is None and self.codec_type is not None:
@@ -100,14 +96,14 @@ class RTPMediaProfiles(FieldsEnum):
     __allow_unknown__ = True
 
     # FIXME: should this be int only? (same in RTPMediaFormat)
-    payload_type: Union[int, str]
+    payload_type: int | str
     media_type: RTPMediaType
     encoding_name: str
     clock_rate: int
-    channels: Optional[int]
-    format_specific_parameters: Optional[str]
-    codec_type: Optional[Type[Codec]]
-    codec: Optional[Codec]
+    channels: int | None
+    format_specific_parameters: str | None
+    codec_type: type[Codec] | None
+    codec: Codec | None
 
     mimetype: str
     encode: Callable[[NDArray[np.float32]], bytes]
@@ -116,8 +112,8 @@ class RTPMediaProfiles(FieldsEnum):
     @classmethod
     def match(
         cls,
-        payload_type: Union[int, str, None] = None,
-        media_format: Optional[RTPMediaFormat] = None,
+        payload_type: int | str | None = None,
+        media_format: RTPMediaFormat | None = None,
     ) -> RTPMediaProfiles:
         """
         Tries to match a media format to a profile.
@@ -129,7 +125,7 @@ class RTPMediaProfiles(FieldsEnum):
         :param media_format: The media format to match.
         :return: The matched or unknown profile.
         """
-        payload_type_raw: Union[int, str]
+        payload_type_raw: int | str
         if payload_type is not None:
             payload_type_raw = payload_type
         elif media_format is not None:
@@ -137,7 +133,7 @@ class RTPMediaProfiles(FieldsEnum):
         else:
             raise ValueError("One of `payload_type` or `media_format` must be provided")
 
-        media_profile: Optional[RTPMediaProfiles] = None
+        media_profile: RTPMediaProfiles | None = None
         try:
             media_profile = RTPMediaProfiles(payload_type_raw)
 
@@ -209,7 +205,7 @@ class RTPPacket(ParseableSerializableRaw):
     sequence: int
     timestamp: int
     ssrc: int
-    csrc: List[int] = dataclass_field(default_factory=list)
+    csrc: list[int] = dataclass_field(default_factory=list)
     ext_id: int = 0
     ext_len: int = 0
     ext_data: bytes = b""

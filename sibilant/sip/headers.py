@@ -10,13 +10,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Dict,
-    List,
     Mapping,
-    Optional,
-    Set,
-    Tuple,
-    Type,
     TypeVar,
     Union,
     cast,
@@ -88,7 +82,7 @@ class Header(
 ):
     """Abstract base dataclass for SIP headers."""
 
-    _name: ClassVar[Union[str, DefaultType]]
+    _name: ClassVar[str | DefaultType]
 
     @property
     def name(self) -> str:
@@ -107,7 +101,7 @@ class Header(
 
     @classmethod
     def parse(
-        cls, header: str, values: Union[str, List[str]], previous_headers: Headers
+        cls, header: str, values: str | list[str], previous_headers: Headers
     ) -> Self:
         """
         Parse a raw header into a header object, picking the correct class.
@@ -122,7 +116,7 @@ class Header(
             raise TypeError(
                 f"Unknown header {header}, and no default header class is defined"
             )
-        header_cls: Type[Header] = cls.__registry_get_class_for__(
+        header_cls: type[Header] = cls.__registry_get_class_for__(
             header if known_header else DEFAULT
         )
         if isinstance(values, str):
@@ -225,24 +219,24 @@ class ViaEntry(ParseableSerializable):
 
     method: str
     address: str
-    port: Optional[int]
-    branch: Optional[str] = None
-    maddr: Optional[str] = None
-    received: Optional[str] = None
-    ttl: Optional[int] = None
-    extension: Dict[str, Optional[str]] = dataclass_field(default_factory=dict)
+    port: int | None
+    branch: str | None = None
+    maddr: str | None = None
+    received: str | None = None
+    ttl: int | None = None
+    extension: dict[str, str | None] = dataclass_field(default_factory=dict)
 
-    _order: Tuple[str, ...] = ()
+    _order: tuple[str, ...] = ()
 
     @property
-    def rport(self) -> Union[bool, int, None]:
+    def rport(self) -> bool | int | None:
         """The rport parameter, if present."""
         if self.extension and "rport" in self.extension:
             return int(self.extension["rport"]) if self.extension["rport"] else True
         return None
 
     @rport.setter
-    def rport(self, value: Union[bool, int, None]) -> None:
+    def rport(self, value: bool | int | None) -> None:
         if not value:
             self.extension.pop("rport", None)
         elif isinstance(value, bool):
@@ -259,11 +253,11 @@ class ViaEntry(ParseableSerializable):
         port = int(port_str) if port_str else None
 
         order = []
-        parsed_params: Dict[str, Union[str, int, None]] = {}
-        extension_params: Dict[str, Optional[str]] = {}
+        parsed_params: dict[str, str | int | None] = {}
+        extension_params: dict[str, str | None] = {}
         for param in params:
             param_name: str
-            param_value: Union[str, int, None]
+            param_value: str | int | None
             param_name, param_value = (
                 param.split("=", maxsplit=1) if "=" in param else (param, None)
             )
@@ -326,8 +320,8 @@ class FromToHeader(Header, ABC):
     """Abstract base dataclass for From and To headers."""
 
     address: SIPAddress
-    raw_address: Optional[str] = None
-    tag: Optional[str] = None
+    raw_address: str | None = None
+    tag: str | None = None
 
     def __post_init__(self) -> None:
         if self.raw_address is None:
@@ -366,10 +360,10 @@ class Contact(ParseableSerializable):
     """A single contact as part of a contact header, as described in :rfc:`3261#section-20.10`."""
 
     address: SIPAddress
-    params: Dict[str, Optional[str]] = dataclass_field(default_factory=dict)
+    params: dict[str, str | None] = dataclass_field(default_factory=dict)
 
     @property
-    def q(self) -> Optional[float]:
+    def q(self) -> float | None:
         """The q parameter, if present."""
         if self.params and isinstance(
             (q_str := self.params.get("q")), (str, int, float)
@@ -378,7 +372,7 @@ class Contact(ParseableSerializable):
         return None
 
     @q.setter
-    def q(self, value: Optional[float]) -> None:
+    def q(self, value: float | None) -> None:
         if self.params is None:
             self.params = {}
         if value is None:
@@ -387,7 +381,7 @@ class Contact(ParseableSerializable):
             self.params["q"] = str(value)
 
     @property
-    def expires(self) -> Optional[int]:
+    def expires(self) -> int | None:
         """The expires parameter, if present."""
         if self.params and isinstance(
             (expires_str := self.params.get("expires")), (str, int, float)
@@ -396,7 +390,7 @@ class Contact(ParseableSerializable):
         return None
 
     @expires.setter
-    def expires(self, value: Optional[int]) -> None:
+    def expires(self, value: int | None) -> None:
         if self.params is None:
             self.params = {}
         if value is None:
@@ -406,7 +400,7 @@ class Contact(ParseableSerializable):
 
     @classmethod
     def parse(cls, value: str) -> Self:  # noqa: D102
-        params: Dict[str, Optional[str]] = {}
+        params: dict[str, str | None] = {}
 
         force_brackets: bool = "<" in value and ">" in value
         if ";" in value:  # there are parameters, address will be in <...> form.
@@ -555,22 +549,22 @@ class AuthorizationHeader(Header):
 
     _name = "Authorization"
 
-    username: Optional[str] = None
-    realm: Optional[str] = None
-    nonce: Optional[str] = None
-    uri: Optional[str] = None
-    algorithm: Optional[str] = None
-    qop: Optional[str] = None
-    nc: Optional[str] = None
-    cnonce: Optional[str] = None
-    response: Optional[str] = None
-    opaque: Optional[str] = None
-    stale: Optional[bool] = None
-    auth_params: Optional[Dict[str, str]] = None
+    username: str | None = None
+    realm: str | None = None
+    nonce: str | None = None
+    uri: str | None = None
+    algorithm: str | None = None
+    qop: str | None = None
+    nc: str | None = None
+    cnonce: str | None = None
+    response: str | None = None
+    opaque: str | None = None
+    stale: bool | None = None
+    auth_params: dict[str, str] | None = None
 
-    _order: Tuple[str, ...] = ()
+    _order: tuple[str, ...] = ()
 
-    _no_quote_params: ClassVar[Set[str]] = {"algorithm", "stale", "qop", "nc"}
+    _no_quote_params: ClassVar[set[str]] = {"algorithm", "stale", "qop", "nc"}
 
     @classmethod
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
@@ -588,7 +582,7 @@ class AuthorizationHeader(Header):
         }
         # TODO: qop can be a comma-separated list of values and might be quoted
         known_param_names = {f.name for f in dataclass_fields(cls)} - {"auth_params"}
-        known_params: Dict[str, Any] = {
+        known_params: dict[str, Any] = {
             name: value for name, value in params.items() if name in known_param_names
         }
         if "stale" in known_params:
@@ -603,7 +597,7 @@ class AuthorizationHeader(Header):
         )
 
     def serialize(self) -> str:  # noqa: D102
-        params_dict: Dict[str, str] = {}
+        params_dict: dict[str, str] = {}
         for field in dataclass_fields(self):
             if field.name in {"auth_params", "_order"}:
                 continue
@@ -658,7 +652,7 @@ class Headers(CaseInsensitiveDict[_H]):
     """
 
     def __init__(
-        self, *headers: _H, data: Optional[Mapping[str, _H]] = None, **kwargs: _H
+        self, *headers: _H, data: Mapping[str, _H] | None = None, **kwargs: _H
     ):
         if headers:
             data = dict(data) if data else {}
