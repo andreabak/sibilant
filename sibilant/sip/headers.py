@@ -1,3 +1,5 @@
+"""SIP headers classes."""
+
 from __future__ import annotations
 
 import re
@@ -6,6 +8,7 @@ from collections import defaultdict
 from dataclasses import field as dataclass_field, fields as dataclass_fields
 from typing import (
     TYPE_CHECKING,
+    Any,
     ClassVar,
     Dict,
     List,
@@ -16,26 +19,28 @@ from typing import (
     Type,
     TypeVar,
     Union,
+    cast,
 )
 
-from typing_extensions import Self
+from typing_extensions import Self, override
 
-from ..exceptions import SIPParseError
-from ..helpers import (
+from sibilant.exceptions import SIPParseError
+from sibilant.helpers import (
     DEFAULT,
     CaseInsensitiveDict,
+    DefaultType,
     IntValueMixin,
     ListValueMixin,
+    ParseableSerializable,
     Registry,
     StrValueMixin,
-    dataclass,
+    SupportsStr,
+    slots_dataclass,
 )
-from ..structures import SIPAddress
+from sibilant.structures import SIPAddress
 
 
 if TYPE_CHECKING:
-    from dataclasses import dataclass
-
     from .messages import SIPMethod
 
 
@@ -76,16 +81,23 @@ _H = TypeVar("_H", bound="Header")
 
 
 class Header(
-    Registry[Union[str, type(DEFAULT)], "Header"],
+    Registry[Union[str, DefaultType], "Header"],
     ABC,
     registry=True,
     registry_attr="_name",
 ):
-    _name: ClassVar[Union[str, type(DEFAULT)]]
+    """Abstract base dataclass for SIP headers."""
+
+    _name: ClassVar[Union[str, DefaultType]]
 
     @property
     def name(self) -> str:
         """The name of the header."""
+        if self._name is DEFAULT:
+            raise SyntaxError(
+                f"Class {self.__class__} must override name() property when using _name = DEFAULT"
+            )
+        assert isinstance(self._name, str)
         return self._name
 
     @property
@@ -103,7 +115,7 @@ class Header(
         :param header: the header name
         :param values: the raw values of the header
         :param previous_headers: the previous headers that have been already parsed
-        :return: the new header object
+        :return: the new header object.
         """
         known_header: bool = header in cls.__registry__
         if not known_header and DEFAULT not in cls.__registry__:
@@ -121,10 +133,10 @@ class Header(
                 raise SIPParseError(
                     f"Multiple values for header {header}, but header is not a MultipleValuesHeader"
                 )
-            value = ListHeader._separator.join(values)
+            value = ListHeader._separator.join(values)  # noqa: SLF001
         else:
             value = values[0]
-        return header_cls.from_raw_value(header, value, previous_headers)
+        return cast(Self, header_cls.from_raw_value(header, value, previous_headers))
 
     @classmethod
     @abstractmethod
@@ -147,52 +159,70 @@ class Header(
         return f"{self.name}: {self.serialize()}"
 
 
-@dataclass
+@slots_dataclass
 class StrHeader(StrValueMixin, Header, ABC):
+    """Abstract base dataclass for headers with a single string value."""
+
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
         return cls(**cls.parse_raw_value(value))
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class UnknownHeader(StrHeader):
+    """Catch-all dataclass for unsupported SIP headers."""
+
     _name = DEFAULT
 
     header: str
 
     @property
+    @override
     def name(self) -> str:
         return self.header
 
     @classmethod
+    @override
     def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
         return cls(header=header, value=value)
 
 
-@dataclass
+@slots_dataclass
 class IntHeader(IntValueMixin, Header, ABC):
+    """Abstract base dataclass for headers with a single integer value."""
+
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
         return cls(**cls.parse_raw_value(value))
 
 
-class ListHeader(ListValueMixin, Header, ABC):
+_ST = TypeVar("_ST", bound=Union[SupportsStr, ParseableSerializable])
+
+
+class ListHeader(ListValueMixin[_ST], Header, ABC):
+    """Abstract base dataclass for headers with a list of values."""
+
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
         return cls(**cls.parse_raw_value(value))
 
 
-class MultipleValuesHeader(ListHeader, ABC):
+class MultipleValuesHeader(ListHeader[_ST], ABC):
+    """Abstract base dataclass for headers which can appear multiple times."""
+
     _prefers_separate_lines: ClassVar[bool] = False
 
+    @override
     def __str__(self) -> str:
         if self._prefers_separate_lines:
-            return "\r\n".join(f"{self.name}: {value}" for value in self.values)
-        return f"{self.name}: {self._separator.join(self.values)}"
+            return "\r\n".join(f"{self.name}: {v}" for v in self._serialized_values())
+        return f"{self.name}: {self.serialize()}"
 
 
-@dataclass(slots=True)
-class ViaEntry:
+@slots_dataclass
+class ViaEntry(ParseableSerializable):
+    """A single Via entry as part of a Via header, as described in :rfc:`3261#section-20.42`."""
+
     method: str
     address: str
     port: Optional[int]
@@ -206,6 +236,7 @@ class ViaEntry:
 
     @property
     def rport(self) -> Union[bool, int, None]:
+        """The rport parameter, if present."""
         if self.extension and "rport" in self.extension:
             return int(self.extension["rport"]) if self.extension["rport"] else True
         return None
@@ -221,24 +252,25 @@ class ViaEntry:
             self.extension["rport"] = str(value)
 
     @classmethod
-    def parse(cls, value: str) -> Self:
+    def parse(cls, value: str) -> Self:  # noqa: D102
         method, address, *params = re.split(r"\s+|\s*;\s*", value.strip())
 
         ip, port_str = address.split(":") if ":" in address else (address, None)
         port = int(port_str) if port_str else None
 
         order = []
-        parsed_params = {}
-        extension_params = {}
+        parsed_params: Dict[str, Union[str, int, None]] = {}
+        extension_params: Dict[str, Optional[str]] = {}
         for param in params:
             param_name: str
-            param_value: Optional[str]
+            param_value: Union[str, int, None]
             param_name, param_value = (
                 param.split("=", maxsplit=1) if "=" in param else (param, None)
             )
             if param_name == "ttl":
                 param_value = int(param_value) if param_value is not None else None
-            if param_name in ("branch", "maddr", "received", "ttl"):
+            assert isinstance(param_value, str) or param_value is None
+            if param_name in {"branch", "maddr", "received", "ttl"}:
                 parsed_params[param_name] = param_value
             else:
                 extension_params[param_name] = param_value
@@ -248,12 +280,12 @@ class ViaEntry:
             method=method,
             address=ip,
             port=port,
-            **parsed_params,
+            **parsed_params,  # type: ignore[arg-type]
             extension=extension_params,
             _order=tuple(order),
         )
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         host = f"{self.address}:{self.port}" if self.port else self.address
         params_dict = {
             param_name: param_value
@@ -271,81 +303,79 @@ class ViaEntry:
         return f"{self.method} {host}{''.join(params)}"
 
 
-@dataclass(slots=True)
-class ViaHeader(MultipleValuesHeader):
+@slots_dataclass
+class ViaHeader(MultipleValuesHeader[ViaEntry]):
+    """Via header, as described in :rfc:`3261#section-20.42`."""
+
     _name = "Via"
     _prefers_separate_lines = True
-
-    _entries: List[ViaEntry] = dataclass_field(default_factory=list)
-
-    @property
-    def entries(self) -> List[ViaEntry]:
-        return self._entries
-
-    @entries.setter
-    def entries(self, value: List[ViaEntry]) -> None:
-        assert all(isinstance(entry, ViaEntry) for entry in value)
-        self._entries = list(value)
-        self.values = [entry.serialize() for entry in value]
+    _values_type = ViaEntry
 
     @property
     def first(self) -> ViaEntry:
-        return self.entries[0]
+        """The first via entry in the header."""
+        return self.values[0]
 
-    def __post_init__(self):
-        self.entries = [
-            ViaEntry.parse(value) if isinstance(value, str) else value
-            for value in self.values
-        ]
-        if not self._entries:
+    def __post_init__(self) -> None:
+        if not self.values:
             raise SIPParseError("Via header must have at least one entry")
 
 
-@dataclass
+@slots_dataclass
 class FromToHeader(Header, ABC):
+    """Abstract base dataclass for From and To headers."""
+
     address: SIPAddress
     raw_address: Optional[str] = None
     tag: Optional[str] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.raw_address is None:
             self.raw_address = str(self.address)
 
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
         raw_address, *taginfo = re.split(r"\s*;\s*tag=", value.strip(), maxsplit=1)
         tag = taginfo[0] if taginfo else None
         address = SIPAddress.parse(raw_address)
         return cls(address=address, raw_address=raw_address, tag=tag)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
+        assert self.raw_address is not None
         if self.tag:
             return f"{self.raw_address};tag={self.tag}"
         return self.raw_address
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class FromHeader(FromToHeader):
+    """From header, as described in :rfc:`3261#section-20.20`."""
+
     _name = "From"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ToHeader(FromToHeader):
+    """To header, as described in :rfc:`3261#section-20.39`."""
+
     _name = "To"
 
 
-@dataclass(slots=True)
-class Contact:
-    """
-    A single contact as part of a contact header, as described in :rfc:`3261#section-20.10`.
-    """
+@slots_dataclass
+class Contact(ParseableSerializable):
+    """A single contact as part of a contact header, as described in :rfc:`3261#section-20.10`."""
 
     address: SIPAddress
     params: Dict[str, Optional[str]] = dataclass_field(default_factory=dict)
 
     @property
     def q(self) -> Optional[float]:
-        return float(self.params["q"]) if self.params and "q" in self.params else None
+        """The q parameter, if present."""
+        if self.params and isinstance(
+            (q_str := self.params.get("q")), (str, int, float)
+        ):
+            return float(q_str)
+        return None
 
     @q.setter
     def q(self, value: Optional[float]) -> None:
@@ -358,11 +388,12 @@ class Contact:
 
     @property
     def expires(self) -> Optional[int]:
-        return (
-            int(self.params["expires"])
-            if self.params and "expires" in self.params
-            else None
-        )
+        """The expires parameter, if present."""
+        if self.params and isinstance(
+            (expires_str := self.params.get("expires")), (str, int, float)
+        ):
+            return int(expires_str)
+        return None
 
     @expires.setter
     def expires(self, value: Optional[int]) -> None:
@@ -374,7 +405,7 @@ class Contact:
             self.params["expires"] = str(value)
 
     @classmethod
-    def parse(cls, value: str) -> Self:
+    def parse(cls, value: str) -> Self:  # noqa: D102
         params: Dict[str, Optional[str]] = {}
 
         force_brackets: bool = "<" in value and ">" in value
@@ -393,120 +424,135 @@ class Contact:
         address = SIPAddress.parse(address_raw.strip(), force_brackets=force_brackets)
         return cls(address=address, params=params)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         params = [f";{name}={value}" for name, value in self.params.items()]
         return f"{self.address}{''.join(params)}"
 
 
-@dataclass(slots=True)
-class ContactHeader(MultipleValuesHeader):
+@slots_dataclass
+class ContactHeader(MultipleValuesHeader[Contact]):
     """
-    Implements a SIP Contact header as described in :rfc:`3261#section-20.10`.
+    Contact header, as described in :rfc:`3261#section-20.10`.
+
     Multiple contacts might be present in a single header, separated by commas.
     """
 
     _name = "Contact"
+    _values_type = Contact
 
-    _contacts: List[Contact] = dataclass_field(default_factory=list)
     # TODO: * contact (see RFC?)
 
     @property
-    def contacts(self) -> List[Contact]:
-        return self._contacts
-
-    @contacts.setter
-    def contacts(self, value: List[Contact]) -> None:
-        assert all(isinstance(contact, Contact) for contact in value)
-        self._contacts = value
-        self.values = [contact.serialize() for contact in value]
-
-    @property
     def contact(self) -> Contact:
-        return self.contacts[0]
-
-    def __post_init__(self):
-        self.contacts = [
-            Contact.parse(value) if isinstance(value, str) else value
-            for value in self.values
-        ]
+        """The first contact in the header."""
+        return self.values[0]
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class RouteHeader(ContactHeader):
+    """Route header, as described in :rfc:`3261#section-20.34`."""
+
     _name = "Route"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class RecordRouteHeader(RouteHeader):
+    """Record-Route header, as described in :rfc:`3261#section-20.30`."""
+
     _name = "Record-Route"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class CallIDHeader(StrHeader):
+    """Call-ID header, as described in :rfc:`3261#section-20.8`."""
+
     _name = "Call-ID"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class CSeqHeader(Header):
+    """CSeq header, as described in :rfc:`3261#section-20.16`."""
+
     _name = "CSeq"
 
     sequence: int
     method: SIPMethod
 
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        from .messages import SIPMethod
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
+        from .messages import SIPMethod  # noqa: PLC0415
 
         sequence, method_raw = value.split(maxsplit=1)
         method = SIPMethod(method_raw)
         return cls(sequence=int(sequence), method=method)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.sequence} {self.method.name}"
 
 
-@dataclass(slots=True)
-class AllowHeader(MultipleValuesHeader):
+@slots_dataclass
+class AllowHeader(MultipleValuesHeader[str]):
+    """Allow header, as described in :rfc:`3261#section-20.5`."""
+
     _name = "Allow"
+    _values_type = str
 
 
-@dataclass(slots=True)
-class AcceptHeader(MultipleValuesHeader):
+@slots_dataclass
+class AcceptHeader(MultipleValuesHeader[str]):
+    """Accept header, as described in :rfc:`3261#section-20.1`."""
+
     _name = "Accept"
+    _values_type = str
 
 
-@dataclass(slots=True)
-class SupportedHeader(MultipleValuesHeader):
+@slots_dataclass
+class SupportedHeader(MultipleValuesHeader[str]):
+    """Supported header, as described in :rfc:`3261#section-20.37`."""
+
     _name = "Supported"
+    _values_type = str
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ExpiresHeader(IntHeader):
+    """Expires header, as described in :rfc:`3261#section-20.19`."""
+
     _name = "Expires"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ContentTypeHeader(StrHeader):
+    """Content-Type header, as described in :rfc:`3261#section-20.15`."""
+
     _name = "Content-Type"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ContentLengthHeader(IntHeader):
+    """Content-Length header, as described in :rfc:`3261#section-20.14`."""
+
     _name = "Content-Length"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class MaxForwardsHeader(IntHeader):
+    """Max-Forwards header, as described in :rfc:`3261#section-20.22`."""
+
     _name = "Max-Forwards"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class UserAgentHeader(StrHeader):
+    """User-Agent header, as described in :rfc:`3261#section-20.41`."""
+
     _name = "User-Agent"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class AuthorizationHeader(Header):
+    """Authorization header, as described in :rfc:`3261#section-20.7`."""
+
     _name = "Authorization"
 
     username: Optional[str] = None
@@ -527,8 +573,8 @@ class AuthorizationHeader(Header):
     _no_quote_params: ClassVar[Set[str]] = {"algorithm", "stale", "qop", "nc"}
 
     @classmethod
-    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:
-        scheme, params = value.split(maxsplit=1)
+    def from_raw_value(cls, header: str, value: str, previous_headers: Headers) -> Self:  # noqa: D102
+        scheme, params_str = value.split(maxsplit=1)
         if scheme.lower() != "digest":
             raise SIPParseError(f"Unsupported authorization scheme: {scheme}")
         # split by commas, remove whitespaces, split by equal sign, remove quotes
@@ -537,12 +583,12 @@ class AuthorizationHeader(Header):
             key: value.strip('"')
             for key, value in (
                 param.strip().split("=", maxsplit=1)
-                for param in params.strip().split(",")
+                for param in params_str.strip().split(",")
             )
         }
         # TODO: qop can be a comma-separated list of values and might be quoted
         known_param_names = {f.name for f in dataclass_fields(cls)} - {"auth_params"}
-        known_params = {
+        known_params: Dict[str, Any] = {
             name: value for name, value in params.items() if name in known_param_names
         }
         if "stale" in known_params:
@@ -551,13 +597,15 @@ class AuthorizationHeader(Header):
             name: value for name, value in params.items() if name not in known_params
         }
         return cls(
-            **known_params, auth_params=auth_params or None, _order=tuple(params)
+            **known_params,
+            auth_params=auth_params or None,
+            _order=tuple(params),  # type: ignore[arg-type]
         )
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         params_dict: Dict[str, str] = {}
         for field in dataclass_fields(self):
-            if field.name in ("auth_params", "_order"):
+            if field.name in {"auth_params", "_order"}:
                 continue
             value = getattr(self, field.name)
             if value is not None:
@@ -576,24 +624,41 @@ class AuthorizationHeader(Header):
         return f"Digest {', '.join(f'{name}={value}' for name, value in params)}"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class WWWAuthenticateHeader(AuthorizationHeader):
+    """WWW-Authenticate header, as described in :rfc:`3261#section-20.44`."""
+
     _name = "WWW-Authenticate"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ProxyAuthorizationHeader(AuthorizationHeader):
+    """Proxy-Authorization header, as described in :rfc:`3261#section-20.28`."""
+
     _name = "Proxy-Authorization"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class ProxyAuthenticateHeader(WWWAuthenticateHeader):
+    """Proxy-Authenticate header, as described in :rfc:`3261#section-20.27`."""
+
     _name = "Proxy-Authenticate"
 
 
 class Headers(CaseInsensitiveDict[_H]):
+    """
+    A case-insensitive dictionary of SIP headers, with some additional parsing
+    and serialization methods to handle raw headers from/to SIP messages.
+
+    The dictionary keys are the header names, and the values are the parsed header objects.
+
+    :param headers: the headers to initialize the dictionary with.
+    :param data: additional headers to initialize the dictionary with, as a mapping.
+    :param kwargs: additional headers to initialize the dictionary with, as keyword arguments.
+    """
+
     def __init__(
-        self, *headers: Header, data: Optional[Mapping[str, _H]] = None, **kwargs
+        self, *headers: _H, data: Optional[Mapping[str, _H]] = None, **kwargs: _H
     ):
         if headers:
             data = dict(data) if data else {}
@@ -608,9 +673,9 @@ class Headers(CaseInsensitiveDict[_H]):
         Parse a raw SIP message into a dictionary of headers.
 
         :param raw_headers: the raw headers
-        :return: the parsed headers
+        :return: the parsed headers.
         """
-        headers: Headers = cls()
+        headers = cls()
 
         header_lines = raw_headers.decode("utf-8").split("\r\n")
         headers_values = defaultdict(list)
@@ -619,7 +684,7 @@ class Headers(CaseInsensitiveDict[_H]):
             headers_values[header].append(raw_value)
 
         for header, raw_values in headers_values.items():
-            headers[header] = Header.parse(header, raw_values, headers)
+            headers[header] = cast(_H, Header.parse(header, raw_values, headers))
 
         return headers
 
@@ -627,7 +692,7 @@ class Headers(CaseInsensitiveDict[_H]):
         """
         Serialize the headers to a raw SIP message.
 
-        :return: the raw headers
+        :return: the raw headers.
         """
         return str(self).encode("utf-8")
 

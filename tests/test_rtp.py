@@ -22,7 +22,7 @@ class TestRTPPackets:
     def test_parse_packets(self, rtp_packets):
         """Test that all the sample RTP packets can be parsed."""
         for packet in rtp_packets:
-            rtp_packet = RTPPacket.parse(packet.data)
+            RTPPacket.parse(packet.data)
             # TODO: asserts
 
 
@@ -56,7 +56,7 @@ def _streams_iterator(packets, skip_payload_types=(96, 101)):
 
 
 def _streams_pair_iterator(packets):
-    """Create pair-matched send and receive streams of packets to simulate server/client"""
+    """Create pair-matched send and receive streams of packets to simulate server/client."""
     StreamsPair = namedtuple("Streampair", "client_streams, server_streams")
     streams_pairs = defaultdict(
         lambda: StreamsPair(defaultdict(list), defaultdict(list))
@@ -133,7 +133,7 @@ class TestRTPStreamBuffer:
             for _ in range(shuffle_size):
                 try:
                     chunk.append(next(packets))
-                except StopIteration:
+                except StopIteration:  # noqa: PERF203
                     return
             if not chunk:
                 break
@@ -149,7 +149,7 @@ class TestRTPStreamBuffer:
 
     def test_write_packets_out_of_order(self, rtp_packets_from_server):
         for stream_iterator in _streams_iterator(rtp_packets_from_server):
-            buffer, data = self._test_write_packets(
+            buffer, _data = self._test_write_packets(
                 self._out_of_order_iterator(stream_iterator, shuffle_size=8),
                 max_pending=10,
             )
@@ -174,7 +174,7 @@ class TestRTPStreamBuffer:
             for _ in range(lose_every):
                 try:
                     packet = next(packets)
-                except StopIteration:
+                except StopIteration:  # noqa: PERF203
                     break
                 else:
                     if packet.sequence in seen_sequences:
@@ -190,7 +190,7 @@ class TestRTPStreamBuffer:
 
     def test_write_packets_lost(self, rtp_packets_from_server):
         for stream_iterator in _streams_iterator(rtp_packets_from_server):
-            buffer, data = self._test_write_packets(
+            buffer, _data = self._test_write_packets(
                 self._packets_loss_iterator(stream_iterator, lose_every=10),
                 max_pending=10,
             )
@@ -236,7 +236,7 @@ class MockRTPServer(MockServer):
     def recv(self):
         pre_time_ns = time.perf_counter_ns()
         try:
-            data, addr = self.socket.recvfrom(8192)
+            data, _addr = self.socket.recvfrom(8192)
         except (socket.timeout, BlockingIOError):
             pass
         else:

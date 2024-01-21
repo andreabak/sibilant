@@ -1,10 +1,11 @@
+"""Common base classes for SDP sections, fields and attributes."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import deque
-from dataclasses import InitVar
+from dataclasses import InitVar, dataclass
 from typing import (
-    TYPE_CHECKING,
     Any,
     ClassVar,
     Deque,
@@ -15,24 +16,25 @@ from typing import (
     Tuple,
     Type,
     Union,
+    cast,
     get_origin,
     get_type_hints,
 )
 
-from typing_extensions import Self
+from typing_extensions import Self, override
 
-from ..exceptions import SDPParseError, SDPUnknownFieldError
-from ..helpers import (
+from sibilant.exceptions import SDPParseError, SDPUnknownFieldError
+from sibilant.helpers import (
     DEFAULT,
+    DefaultType,
+    FieldsParser,
+    OptionalStrValueMixin,
+    ParseableSerializable,
+    ParseableSerializableRaw,
     Registry,
     StrValueMixin,
-    dataclass,
     try_unpack_optional_type,
 )
-
-
-if TYPE_CHECKING:
-    from dataclasses import dataclass
 
 
 __all__ = [
@@ -55,11 +57,13 @@ __all__ = [
 
 
 @dataclass
-class SDPField(Registry[str, "SDPField"], ABC):
+class SDPField(Registry[str, "SDPField"], ParseableSerializable, ABC):
+    """Abstract base dataclass for SDP fields."""
+
     _type: ClassVar[str]
     _description: ClassVar[str]
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # make sure type is set and register the class into known types
@@ -68,18 +72,21 @@ class SDPField(Registry[str, "SDPField"], ABC):
 
     @property
     def type(self) -> str:
+        """The type of the field."""
         return self._type
 
     @classmethod
-    def parse(cls, raw_data: str) -> Self:
+    def parse(cls, raw_data: str) -> Self:  # noqa: D102
         field_type, raw_value = raw_data.strip().split("=", 1)
 
         try:
             field_cls = cls.__registry_get_class_for__(field_type)
         except KeyError:
-            raise SDPUnknownFieldError(f"Unknown SDP field type {field_type}")
+            raise SDPUnknownFieldError(f"Unknown SDP field type {field_type}")  # noqa: B904
 
-        return field_cls.from_raw_value(field_type=field_type, raw_value=raw_value)
+        return cast(
+            Self, field_cls.from_raw_value(field_type=field_type, raw_value=raw_value)
+        )
 
     @classmethod
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
@@ -88,9 +95,9 @@ class SDPField(Registry[str, "SDPField"], ABC):
 
         :param field_type: the field type
         :param raw_value: the raw value of the field
-        :return: the field object
+        :return: the field object.
         """
-        if hasattr(cls, "parse_raw_value"):
+        if isinstance(cls, FieldsParser):
             return cls(**cls.parse_raw_value(raw_value))
         raise NotImplementedError
 
@@ -107,22 +114,35 @@ class SDPField(Registry[str, "SDPField"], ABC):
 
 
 @dataclass
-class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
-    _name: ClassVar[Union[str, type(DEFAULT)]]
+class SDPAttribute(
+    Registry[Union[str, DefaultType], "SDPAttribute"], ParseableSerializable, ABC
+):
+    """Abstract base dataclass for SDP attributes."""
+
+    _name: ClassVar[Union[str, DefaultType]]
     _is_flag: ClassVar[Optional[bool]] = None
 
     @property
     def name(self) -> str:
+        """The name of the attribute."""
+        if self._name is DEFAULT:
+            raise SyntaxError(
+                f"Class {self.__class__} must override name() property when using _name = DEFAULT"
+            )
+        assert isinstance(self._name, str)
         return self._name
 
     @property
     def is_flag(self) -> bool:
+        """Whether the attribute is a flag or not."""
         return bool(self._is_flag)
 
     @classmethod
-    def parse(cls, raw_data: str) -> Self:
+    def parse(cls, raw_data: str) -> Self:  # noqa: D102
+        name: str
+        raw_value: Optional[str]
         name, raw_value = (
-            raw_data.split(":", 1) if ":" in raw_data else (raw_data, None)
+            raw_data.split(":", 1) if ":" in raw_data else (raw_data, None)  # type: ignore[assignment]
         )
 
         if cls._is_flag is not None:
@@ -145,7 +165,7 @@ class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
             registry_name if is_known_attribute else DEFAULT
         )
 
-        return attr_cls.from_raw_value(name, raw_value)
+        return cast(Self, attr_cls.from_raw_value(name, raw_value))
 
     @classmethod
     @abstractmethod
@@ -162,25 +182,29 @@ class SDPAttribute(Registry[Union[str, type(DEFAULT)], "SDPAttribute"], ABC):
     def serialize(self) -> str:
         """Serialize the attribute value to a string."""
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Serialize the whole attribute to a string."""
         return f"{self.name}:{self.serialize()}" if not self.is_flag else self.name
 
 
 @dataclass
 class FlagAttribute(SDPAttribute, ABC):
+    """Abstract base dataclass for SDP flag attributes."""
+
     _is_flag: ClassVar[bool] = True
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
+    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
         return cls()
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         raise ValueError("Flag attributes have no value to serialize")
 
 
 @dataclass
 class ValueAttribute(SDPAttribute, ABC):
+    """Abstract base dataclass for SDP value attributes."""
+
     value: Any
 
     @classmethod
@@ -189,48 +213,61 @@ class ValueAttribute(SDPAttribute, ABC):
 
 
 @dataclass
-class UnknownAttribute(StrValueMixin, SDPAttribute, ABC):
+class UnknownAttribute(OptionalStrValueMixin, SDPAttribute, ABC):
+    """Abstract base dataclass for parsing unsupported SDP attributes."""
+
     _name = DEFAULT
 
     attribute: str
 
     @property
     def name(self) -> str:
+        """The name of the attribute."""
         return self.attribute
 
     @classmethod
-    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:
+    def from_raw_value(cls, name: str, raw_value: Optional[str]) -> Self:  # noqa: D102
         return cls(attribute=name, value=raw_value)
 
 
 class MediaFlowAttribute(FlagAttribute, ABC):
+    """Abstract base dataclass for SDP media flow attributes, defined in :rfc:`8866#section-6.7`."""
+
     _is_flag = True
 
 
 @dataclass
 class RecvOnlyFlag(MediaFlowAttribute, ABC):
+    """SDP media flow attribute for recvonly, defined in :rfc:`8866#section-6.7.1`."""
+
     _name = "recvonly"
 
 
 @dataclass
 class SendRecvFlag(MediaFlowAttribute, ABC):
+    """SDP media flow attribute for sendrecv, defined in :rfc:`8866#section-6.7.2`."""
+
     _name = "sendrecv"
 
 
 @dataclass
 class SendOnlyFlag(MediaFlowAttribute, ABC):
+    """SDP media flow attribute for sendonly, defined in :rfc:`8866#section-6.7.3`."""
+
     _name = "sendonly"
 
 
 @dataclass
 class InactiveFlag(MediaFlowAttribute, ABC):
+    """SDP media flow attribute for inactive, defined in :rfc:`8866#section-6.7.4`."""
+
     _name = "inactive"
 
 
 @dataclass
 class SDPInformationField(StrValueMixin, SDPField, ABC):
     """
-    SDP session information field, defined in :rfc:`4566#section-5.4`.
+    SDP session information field, defined in :rfc:`8866#section-5.4`.
 
     Spec::
         i=<session description>
@@ -240,13 +277,14 @@ class SDPInformationField(StrValueMixin, SDPField, ABC):
 
     @property
     def session_description(self) -> str:
+        """The session description."""
         return self.value
 
 
 @dataclass
 class SDPConnectionField(SDPField, ABC):
     """
-    SDP session connection field, defined in :rfc:`4566#section-5.7`.
+    SDP session connection field, defined in :rfc:`8866#section-5.7`.
 
     Spec::
         c=<nettype> <addrtype> <connection-address>
@@ -262,6 +300,7 @@ class SDPConnectionField(SDPField, ABC):
 
     @property
     def connection_address(self) -> str:
+        """The connection address as string, with optional TTL and number of addresses."""
         parts = [self.address]
         if self.ttl is not None:
             parts.append(str(self.ttl))
@@ -270,9 +309,11 @@ class SDPConnectionField(SDPField, ABC):
         return "/".join(parts)
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         nettype, addrtype, connection_address = raw_value.split(" ")
-        # parse the connection address. Keep in mind IPv6 don't have TTL, so the second part might be the number of addresses
+        # parse the connection address. Keep in mind IPv6 don't have TTL,
+        # so the second part might be the number of addresses
         address, *rest = connection_address.split("/")
         ttl = number_of_addresses = None
         if rest:
@@ -298,14 +339,14 @@ class SDPConnectionField(SDPField, ABC):
             number_of_addresses=number_of_addresses,
         )
 
-    def serialize(self) -> str:
-        return " ".join((self.nettype, self.addrtype, self.connection_address))
+    def serialize(self) -> str:  # noqa: D102
+        return " ".join((self.nettype, self.addrtype, self.connection_address))  # noqa: FLY002
 
 
 @dataclass
 class SDPBandwidthField(SDPField, ABC):
     """
-    SDP session bandwidth field, defined in :rfc:`4566#section-5.8`.
+    SDP session bandwidth field, defined in :rfc:`8866#section-5.8`.
 
     Spec::
         b=<bwtype>:<bandwidth>
@@ -317,18 +358,19 @@ class SDPBandwidthField(SDPField, ABC):
     bandwidth: int
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         bwtype, bandwidth = raw_value.split(":")
         return cls(bwtype=bwtype, bandwidth=int(bandwidth))
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.bwtype}:{self.bandwidth}"
 
 
 @dataclass
 class SDPEncryptionField(SDPField, ABC):
     """
-    SDP session encryption field, defined in :rfc:`4566#section-5.12`.
+    SDP session encryption field, defined in :rfc:`8866#section-5.12`.
 
     Spec::
         k=<method>
@@ -341,24 +383,27 @@ class SDPEncryptionField(SDPField, ABC):
     key: Optional[str] = None
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         method: str
         key: Optional[str]
-        method, key = raw_value.split(":") if ":" in raw_value else (raw_value, None)
+        method, key = raw_value.split(":") if ":" in raw_value else (raw_value, None)  # type: ignore[assignment]
         return cls(method=method, key=key)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.method}:{self.key}" if self.key else self.method
 
 
 @dataclass
 class SDPAttributeField(SDPField, ABC):
+    """Abstract base dataclass for SDP attribute fields."""
+
     _type = "a"
     _attribute_cls: ClassVar[Type[SDPAttribute]]
 
     attribute: SDPAttribute
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         if not hasattr(cls, "_attribute_cls"):
@@ -368,22 +413,27 @@ class SDPAttributeField(SDPField, ABC):
 
     @property
     def name(self) -> str:
+        """The name of the attribute."""
         return self.attribute.name
 
     @property
     def is_flag(self) -> bool:
+        """Whether the attribute is a flag or not."""
         return self.attribute.is_flag
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         return cls(attribute=cls._attribute_cls.parse(raw_value))
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return str(self.attribute)
 
 
 @dataclass
-class SDPSection(ABC):
+class SDPSection(ParseableSerializableRaw, ABC):
+    """Abstract base dataclass for SDP sections."""
+
     _fields_base: ClassVar[Type[SDPField]]
     _start_field: ClassVar[Type[SDPField]]
 
@@ -395,7 +445,7 @@ class SDPSection(ABC):
     def _reveal_wrapped_type(cls, field_type: Any) -> Type:
         if isinstance(field_type, str) and field_type in globals():
             field_type = globals()[field_type]
-        if get_origin(field_type) in (list, List):
+        if get_origin(field_type) in {list, List}:
             field_type = field_type.__args__[0]
         field_type = try_unpack_optional_type(field_type)
         if isinstance(field_type, type):
@@ -409,15 +459,15 @@ class SDPSection(ABC):
         # check annotations
         for field_name, field_type in get_type_hints(cls).items():
             # skip ClassVar and InitVar fields
-            if get_origin(field_type) in (ClassVar, InitVar):
+            if get_origin(field_type) in {ClassVar, InitVar}:
                 continue
             wrapped_type: Type = cls._reveal_wrapped_type(field_type)
             sdp_type: Optional[str] = None
             if issubclass(wrapped_type, SDPField):
-                sdp_type = wrapped_type._type
+                sdp_type = wrapped_type._type  # noqa: SLF001
             elif issubclass(wrapped_type, SDPSection):
                 # noinspection PyProtectedMember
-                sdp_type = wrapped_type._start_field._type
+                sdp_type = wrapped_type._start_field._type  # noqa: SLF001
                 cls._subsections_map[sdp_type] = wrapped_type
             elif not issubclass(wrapped_type, SDPField):
                 continue
@@ -425,7 +475,7 @@ class SDPSection(ABC):
                 raise TypeError(f"Unknown field type {wrapped_type}")
             cls._sdp_fields_map[sdp_type] = field_name, field_type, wrapped_type
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         if not hasattr(cls, "_fields_base"):
@@ -441,7 +491,14 @@ class SDPSection(ABC):
         return line
 
     @classmethod
-    def from_lines(cls, lines: Deque[str], is_subsection=False) -> Self:
+    def from_lines(cls, lines: Deque[str], *, is_subsection: bool = False) -> Self:
+        """
+        Parse an SDP section from a list of lines.
+
+        :param lines: the lines to parse.
+        :param is_subsection: whether the section is a subsection of another section.
+        :return: the parsed SDP section.
+        """
         fields: Dict[str, Any] = {}
         while lines:
             line = lines.popleft()
@@ -467,7 +524,7 @@ class SDPSection(ABC):
             assert sdp_type is not None
             assert value is not None
             field_name, field_type, _ = cls._sdp_fields_map[sdp_type]
-            if get_origin(field_type) in (list, List):
+            if get_origin(field_type) in {list, List}:
                 fields.setdefault(field_name, []).append(value)
             else:
                 if field_name in fields:
@@ -479,7 +536,7 @@ class SDPSection(ABC):
 
     @classmethod
     def parse(cls, raw_value: bytes) -> Self:
-        """Parse an SDP session from a string"""
+        """Parse an SDP session from a string."""
         sdp_lines = raw_value.decode("utf-8").split("\r\n")
 
         to_process_lines: Deque[str] = deque(
@@ -488,17 +545,17 @@ class SDPSection(ABC):
         return cls.from_lines(to_process_lines)
 
     def serialize(self) -> bytes:
-        """Serialize the SDP section to a string"""
+        """Serialize the SDP section to a string."""
         return str(self).encode("utf-8")
 
     def __str__(self) -> str:
-        """Serialize the SDP section to a string"""
-        serialized_fields = []
+        """Serialize the SDP section to a string."""
+        serialized_fields: List[str] = []
         for field_name, field_type, _ in self._sdp_fields_map.values():
             value = getattr(self, field_name)
             if value is None:
                 continue
-            if get_origin(field_type) in (list, List):
+            if get_origin(field_type) in {list, List}:
                 serialized_fields.extend(map(str, value))
             else:
                 serialized_fields.append(str(value))

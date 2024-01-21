@@ -1,3 +1,5 @@
+"""Sibilant is a pure-Python VoIP/SIP/RTP library."""
+
 from ._package_metadata import get_metadata as _metadata
 
 

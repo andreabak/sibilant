@@ -7,7 +7,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from typing import Generic, Iterator, Optional, Tuple, TypeVar
+from types import TracebackType
+from typing import Generic, Iterator, Optional, Tuple, Type, TypeVar
 
 import dpkt
 import pytest
@@ -48,7 +49,7 @@ def get_test_server_options(config):
         raise ValueError(
             "need --test-server command line options to run with a real server"
         )
-    elif not all(phone_kwargs.values()):
+    if not all(phone_kwargs.values()):
         raise ValueError(
             "need ALL these command line options to run with a real server: "
             "--test-server-address, --test-server-username, --test-server-password"
@@ -97,7 +98,7 @@ class Packet:
 
 
 @pytest.fixture(scope="session")
-def voip_calls():
+def voip_calls():  # noqa: PLR0914
     """
     Parse pcap files, and return an iterable of calls, which are iterables of packets.
     Separate client and server packets, and SIP and RTP packets.
@@ -118,7 +119,7 @@ def voip_calls():
                     continue
 
                 ip = eth.data
-                if ip.p not in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
+                if ip.p not in {dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP}:
                     continue
                 data, src, sport, dst, dport = (
                     ip.data.data,
@@ -144,7 +145,7 @@ def voip_calls():
                     nonlocal aux_src_str
                     if match := re.search(
                         r"^c *= *IN +IP4 +\b(\d+\.\d+\.\d+\.\d+)\b",
-                        data.decode(),
+                        data.decode(),  # noqa: B023
                         re.M | re.I,
                     ):
                         aux_src_str = match.group(1)
@@ -174,8 +175,7 @@ def voip_calls():
                             if aux_src_str:
                                 known_client_ips.add(aux_src_str)
                         elif dest is Dest.CLIENT:
-                            if src_str in known_client_ips:
-                                known_client_ips.remove(src_str)
+                            known_client_ips.discard(src_str)
                             known_server_ips.add(src_str)
                             if aux_src_str:
                                 known_server_ips.add(aux_src_str)
@@ -192,13 +192,13 @@ def voip_calls():
                 )
 
         def categorize_packet(packet):
-            if packet.src_addr[0] in known_server_ips:
+            if packet.src_addr[0] in known_server_ips:  # noqa: B023
                 return Dest.CLIENT
-            if packet.src_addr[0] in known_client_ips:
+            if packet.src_addr[0] in known_client_ips:  # noqa: B023
                 return Dest.SERVER
-            if packet.dst_addr[0] in known_server_ips:
+            if packet.dst_addr[0] in known_server_ips:  # noqa: B023
                 return Dest.SERVER
-            if packet.dst_addr[0] in known_client_ips:
+            if packet.dst_addr[0] in known_client_ips:  # noqa: B023
                 return Dest.CLIENT
             return None
 
@@ -362,5 +362,10 @@ class MockServer(ABC, Generic[_PT]):
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exctype: Optional[Type[BaseException]],
+        excinst: Optional[BaseException],
+        exctb: Optional[TracebackType],
+    ) -> None:
         self.stop()

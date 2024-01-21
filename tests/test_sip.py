@@ -12,6 +12,7 @@ import pytest
 from sibilant import rtp
 from sibilant.exceptions import SIPException
 from sibilant.sip import (
+    CallHandler,
     CallState,
     Header,
     Headers,
@@ -58,7 +59,7 @@ class TestHeaders:
         for header_name in support_mutliple_values_headers:
             try:
                 header_cls = Header.__registry_get_class_for__(header_name)
-            except KeyError:
+            except KeyError:  # noqa: PERF203
                 _logger.info(f"Header {header_name} not implemented yet")
             else:
                 if not issubclass(header_cls, MultipleValuesHeader):
@@ -91,7 +92,7 @@ class TestSIPMessages:
             ), "Headers should be in the same order as the original message"
 
             def clean(s):
-                """Clean headers for comparison"""
+                """Clean headers for comparison."""
                 if not s.endswith("\r\n"):
                     s += "\r\n"
                 # remove extra whitespace in each header, collapse to a single space
@@ -120,7 +121,7 @@ class TestSIPMessages:
                 assert (
                     header.name in headers
                 ), f"{hdr_cls_name}: header name should be in Headers map"
-                assert (
+                assert (  # noqa: PT018
                     header.name.upper() in headers and header.name.lower() in headers
                 ), f"{hdr_cls_name}: headers should be case-insensitive"
 
@@ -261,14 +262,14 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
         except (socket.timeout, BlockingIOError):
             pass
         else:
-            message = SIPMessage.parse(data, addr)
+            message = SIPMessage.parse(data, origin=addr)
             self.last_recv_msg = message
             self.recv_count += 1
             self.recv_queue.append(message)
             _logger.debug(f"Received {message!r}")
 
 
-class TestCallHandler:
+class TestCallHandler(CallHandler):
     """A mock VoIP phone that can send and receive SIP messages."""
 
     @property
@@ -313,7 +314,7 @@ def mute_caplog(caplog, mute, logger_name=None):
 
 
 @pytest.fixture()
-def skip_register(monkeypatch):
+def _skip_register(monkeypatch):
     async def mock_register(self):
         self._registered = True
 
@@ -321,10 +322,10 @@ def skip_register(monkeypatch):
 
 
 @pytest.fixture()
-def skip_deregister(monkeypatch):
+def _skip_deregister(monkeypatch):
     original__register_transaction = SIPRegistration._register_transaction
 
-    async def mock_register_transaction(self, deregister: bool = False) -> None:
+    async def mock_register_transaction(self, *, deregister: bool = False) -> None:
         if deregister:
             return None  # skip deregister
         return await original__register_transaction(self, deregister=deregister)
@@ -335,13 +336,11 @@ def skip_deregister(monkeypatch):
 
 
 class TestSIPClient:
-    """
-    Test SIPClient class.
-    """
+    """Test SIPClient class."""
 
     @classmethod
     @contextmanager
-    def _prepare_server_client(
+    def _init_server_client(
         cls,
         server_packets,
         *,
@@ -365,7 +364,7 @@ class TestSIPClient:
             wait_recv_timeout=wait_recv_timeout,
         )
         client = SIPClient(
-            call_handler_factory=lambda call: TestCallHandler(),
+            call_handler_factory=lambda call: TestCallHandler(),  # noqa: ARG005
             username="alice",
             password="secret",
             server_host=server_address[0],
@@ -381,7 +380,7 @@ class TestSIPClient:
 
     @classmethod
     def _test_registration(cls, server_packets, expect_failure, **kwargs):
-        with cls._prepare_server_client(server_packets, **kwargs) as (server, client):
+        with cls._init_server_client(server_packets, **kwargs) as (server, client):  # noqa: SIM117
             with server:
                 with pytest.raises(Exception) as exc_info, client:
                     while not server.send_done and not client.closed:
@@ -394,7 +393,7 @@ class TestSIPClient:
 
                     raise StopIteration
 
-                assert exc_info.type == StopIteration or (
+                assert exc_info.type is StopIteration or (
                     issubclass(exc_info.type, SIPException) and expect_failure
                 ), (
                     f"SIP client failed with unexpected {exc_info.type}: {exc_info.value}"
@@ -403,13 +402,16 @@ class TestSIPClient:
                     f"\nlast received message: {server.last_recv_msg!r}"
                 )
 
-    def test_register(self, sip_registrations, skip_deregister, monkeypatch, caplog):
+    @pytest.mark.usefixtures("_skip_deregister")
+    def test_register(self, sip_registrations, monkeypatch, caplog):
         """Test that the client can register with the server."""
         for call_id, packets in sip_registrations.items():
             server_packets = [
                 pm if pm.packet.dest == Dest.CLIENT else None for pm in packets
             ]
-            # check if we have any 400,402+ responses in the server packets or 2 or more subsequent 401, and set an expect_failure flag. We have only REGISTER packets here, so we can skip the CSeq check.
+            # check if we have any 400,402+ responses in the server packets or 2 or more
+            # subsequent 401, and set an expect_failure flag.
+            # We have only REGISTER packets here, so we can skip the CSeq check.
             expect_failure = False
             last_message = None
             for pm in server_packets:
@@ -443,7 +445,7 @@ class TestSIPClient:
     def _test_invite_wrapper(
         cls, call_test_fn, server_packets, expected_states, **kwargs
     ):
-        with cls._prepare_server_client(server_packets, **kwargs) as (server, client):
+        with cls._init_server_client(server_packets, **kwargs) as (server, client):  # noqa: SIM117
             with client, server:
                 call = call_test_fn(client, server)
 
@@ -462,7 +464,7 @@ class TestSIPClient:
             call = None
             while not server.send_done or client._pending_futures:
                 if call is None and client.calls:
-                    call = list(client.calls.values())[0]
+                    call = next(iter(client.calls.values()))
                 time.sleep(1e-9)
             time.sleep(1e-1)
             return call
@@ -471,9 +473,8 @@ class TestSIPClient:
             grab_call_and_wait, server_packets, expected_states, **kwargs
         )
 
-    def test_invite_incoming(
-        self, incoming_invites, skip_register, skip_deregister, caplog
-    ):
+    @pytest.mark.usefixtures("_skip_register", "_skip_deregister")
+    def test_invite_incoming(self, incoming_invites, caplog):
         """Test that the client can send an INVITE to the server."""
         for call_id, packets in incoming_invites.items():
             # the flow is >INVITE, <180 Ringing, <200 Ok, >ACK [, >BYE, <200 Ok]
@@ -494,7 +495,7 @@ class TestSIPClient:
                     _logger.warning(f"Unexpected packet in incoming INVITE flow: {pm}")
                     server_packets = []
                     break
-                last_method = (msg and msg.method) or None
+                last_method = msg.method if msg else None
             if not server_packets:
                 continue
 
@@ -535,9 +536,8 @@ class TestSIPClient:
             send_invite_and_wait, server_packets, expected_states, **kwargs
         )
 
-    def test_invite_outgoing(
-        self, outgoing_invites, skip_register, skip_deregister, caplog
-    ):
+    @pytest.mark.usefixtures("_skip_register", "_skip_deregister")
+    def test_invite_outgoing(self, outgoing_invites, caplog):
         """Test that the client can send an INVITE to the server."""
         for call_id, packets in outgoing_invites.items():
             assert isinstance(packets[0].message, SIPRequest)
@@ -553,17 +553,17 @@ class TestSIPClient:
                     method = pm.message.method
                     if method == SIPMethod.INVITE and method in client_methods:
                         break  # TODO: better split retransmitted packets from server
-                    if method in (SIPMethod.CANCEL, SIPMethod.BYE):
+                    if method in {SIPMethod.CANCEL, SIPMethod.BYE}:
                         break  # TODO: implement
                     client_methods.append(method)
                     server_packets.append(None)
                 elif isinstance(pm.message, SIPResponse):
                     server_packets.append(pm)
                     last_response_status = pm.message.status
-                    if last_response_status.code not in (100, 180, 200):
+                    if last_response_status.code not in {100, 180, 200}:
                         break
                 else:
-                    raise RuntimeError(f"Unexpected packet: {pm}")
+                    raise TypeError(f"Unexpected packet: {pm}")
 
             if last_response_status.code == 200:
                 expected_states = (CallState.ESTABLISHED,)

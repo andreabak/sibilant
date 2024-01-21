@@ -1,14 +1,23 @@
+"""SIP messages and related structures."""
+
 from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Tuple, TypeVar
+from typing import Any, Dict, Optional, Tuple, Union
 
-from ..constants import SUPPORTED_SIP_VERSIONS
-from ..exceptions import SIPParseError, SIPUnsupportedError, SIPUnsupportedVersion
-from ..helpers import AutoFieldsEnum, SupportsStr
-from ..sdp import SDPSession
-from ..structures import SIPURI
+from typing_extensions import Self, override
+
+from sibilant.constants import SUPPORTED_SIP_VERSIONS
+from sibilant.exceptions import (
+    SIPParseError,
+    SIPUnsupportedError,
+    SIPUnsupportedVersion,
+)
+from sibilant.helpers import AutoFieldsEnum, ParseableSerializableRaw, SupportsStr
+from sibilant.sdp import SDPSession
+from sibilant.structures import SIPURI
+
 from .headers import Headers
 
 
@@ -22,11 +31,13 @@ __all__ = [
 
 
 class SIPMethod(AutoFieldsEnum):
+    """Enum dataclass for SIP requests methods, along with their description."""
+
     name: str
     description: str
 
     @property
-    def enum_value(self) -> Any:
+    def enum_value(self) -> Any:  # noqa: D102
         return self.name
 
     REGISTER = (
@@ -90,12 +101,14 @@ class SIPMethod(AutoFieldsEnum):
 
 
 class SIPStatus(AutoFieldsEnum):
+    """Enum dataclass for SIP responses status codes, along with their reason and description."""
+
     code: int
     reason: str
     description: Optional[str]
 
     @property
-    def enum_value(self) -> Any:
+    def enum_value(self) -> Any:  # noqa: D102
         return self.code
 
     def __int__(self) -> int:
@@ -128,7 +141,8 @@ class SIPStatus(AutoFieldsEnum):
     SESSION_PROGRESS = (
         183,
         "Session Progress",
-        "This response may be used to _send extra information for a call which is still being set up.",
+        "This response may be used to send extra information for a call "
+        "which is still being set up.",
     )
     EARLY_DIALOG_TERMINATED = (
         199,
@@ -152,7 +166,8 @@ class SIPStatus(AutoFieldsEnum):
     NO_NOTIFICATION = (
         204,
         "No Notification",
-        "Indicates the request was successful, but the corresponding response will not be received.",
+        "Indicates the request was successful, but the corresponding response "
+        "will not be received.",
     )
 
     # 3xx Redirection Responses
@@ -248,7 +263,8 @@ class SIPStatus(AutoFieldsEnum):
     CONFLICT = (
         409,
         "Conflict",
-        "User already registered. Deprecated by omission from later RFCs and by non-registration with the IANA.",
+        "User already registered. "
+        "Deprecated by omission from later RFCs and by non-registration with the IANA.",
     )
     GONE = (
         410,
@@ -305,7 +321,8 @@ class SIPStatus(AutoFieldsEnum):
     SESSION_INTERVAL_TOO_SMALL = (
         422,
         "Session Interval Too Small",
-        "The received request contains a Session-Expires header field with a duration below the minimum timer.",
+        "The received request contains a Session-Expires header field "
+        "with a duration below the minimum timer.",
     )
     INTERVAL_TOO_BRIEF = (
         423,
@@ -350,7 +367,8 @@ class SIPStatus(AutoFieldsEnum):
     BAD_IDENTITY_INFO = (
         436,
         "Bad Identity-Info",
-        "The request has an Identity-Info header, and the URI scheme in that header cannot be dereferenced.",
+        "The request has an Identity-Info header, and the URI scheme in that header "
+        "cannot be dereferenced.",
     )
     UNSUPPORTED_CERTIFICATE = (
         437,
@@ -389,7 +407,8 @@ class SIPStatus(AutoFieldsEnum):
     CONSENT_NEEDED = (
         470,
         "Consent Needed",
-        "The source of the request did not have the permission of the recipient to make such a request.",
+        "The source of the request did not have the permission of the recipient "
+        "to make such a request.",
     )
     TEMPORARILY_UNAVAILABLE = (
         480,
@@ -505,7 +524,8 @@ class SIPStatus(AutoFieldsEnum):
     PUSH_NOTIFICATION_SERVICE_NOT_SUPPORTED = (
         555,
         "Push Notification Service Not Supported",
-        "The server does not support the push notification service identified in a 'pn-provider' SIP URI parameter",
+        "The server does not support the push notification service identified in "
+        "a 'pn-provider' SIP URI parameter",
     )
     PRECONDITION_FAILURE = (
         580,
@@ -559,10 +579,17 @@ class SIPStatus(AutoFieldsEnum):
     )
 
 
-_M = TypeVar("_M", bound="SIPMessage")
+class SIPMessage(ParseableSerializableRaw, ABC):
+    """
+    Abstract base class for SIP messages, defined in :rfc:`3261#section-7`.
 
+    :param version: SIP version to use in the request line / status line.
+    :param headers: SIP headers of the message.
+    :param body: SIP body of the message, if any.
+    :param origin: Origin of the message, as a tuple of (host, port), if known.
+    :param destination: Destination of the message, as a tuple of (host, port), if known.
+    """
 
-class SIPMessage(ABC):
     def __init__(
         self,
         version: str,
@@ -590,7 +617,9 @@ class SIPMessage(ABC):
         """Start line of the SIP message."""
 
     @classmethod
-    def parse(cls, data: bytes, origin: Optional[Tuple[str, int]] = None) -> _M:
+    def parse(  # noqa: D102
+        cls, data: bytes, *, origin: Optional[Tuple[str, int]] = None
+    ) -> Union[Self, SIPMessage]:
         if cls is SIPMessage:
             if re.search(rb"^SIP/[\d.]+", data):
                 return SIPResponse.parse(data, origin=origin)
@@ -598,6 +627,9 @@ class SIPMessage(ABC):
                 return SIPRequest.parse(data, origin=origin)
             else:
                 raise SIPParseError("Invalid SIP message")
+
+        assert issubclass(cls, SIPMessage)
+        assert cls is not SIPMessage
 
         try:
             headers_raw, *rest = data.split(b"\r\n\r\n", 1)
@@ -607,8 +639,9 @@ class SIPMessage(ABC):
             headers: Headers = Headers.parse(headers_fields)
             body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body, origin=origin)
-        except Exception as e:
-            raise SIPParseError(f"Failed to parse SIP message: {e}\n{data}") from e
+        # FIXME: improve broad error handling
+        except Exception as e:  # noqa: BLE001
+            raise SIPParseError(f"Failed to parse SIP message: {e}\n{data!r}") from e
 
     @classmethod
     @abstractmethod
@@ -621,7 +654,7 @@ class SIPMessage(ABC):
         if "Content-Encoding" in headers:
             raise SIPUnsupportedError("Encoded SIP content is not supported")
 
-        if "Content-Type" not in headers or not int(headers.get("Content-Length")):
+        if "Content-Type" not in headers or not int(headers.get("Content-Length", 0)):
             return None
         content_type = headers["Content-Type"].raw_value
 
@@ -635,7 +668,7 @@ class SIPMessage(ABC):
     def __str__(self) -> str:
         return f"{self.start_line}\r\n{self.headers}\r\n\r\n{self.body or ''}"
 
-    def serialize(self) -> bytes:
+    def serialize(self) -> bytes:  # noqa: D102
         return str(self).encode("utf-8")
 
     def __bytes__(self) -> bytes:
@@ -650,12 +683,24 @@ class SIPMessage(ABC):
 
 
 class SIPRequest(SIPMessage):
+    """
+    SIP requests implementation, as defined in :rfc:`3261#section-7.1`.
+
+    :param method: SIP method of the request.
+    :param uri: SIP URI of the request.
+    :param version: SIP version of the request.
+    :param headers: SIP headers of the request.
+    :param body: SIP body of the request, if any.
+    :param origin: Origin of the request, as a tuple of (host, port), if known.
+    :param destination: Destination of the request, as a tuple of (host, port), if known.
+    """
+
     def __init__(
         self,
         method: SIPMethod,
         uri: SIPURI,
         version: str,
-        headers: Optional[Headers] = None,
+        headers: Headers,
         body: Optional[SupportsStr] = None,
         origin: Optional[Tuple[str, int]] = None,
         destination: Optional[Tuple[str, int]] = None,
@@ -665,18 +710,21 @@ class SIPRequest(SIPMessage):
         self.uri: SIPURI = uri
 
     @property
+    @override
     def start_line(self) -> str:
         return (
             f"{self.method} {self.uri.serialize(force_brackets=False)} {self.version}"
         )
 
     @classmethod
+    @override
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
         method_raw, uri_raw, version = start_line.decode("utf-8").split(" ")
         return dict(
             method=SIPMethod(method_raw), uri=SIPURI.parse(uri_raw), version=version
         )
 
+    @override
     def __eq__(self, other: Any) -> bool:
         return isinstance(other, SIPRequest) and (
             (self.method, self.uri, self.version, self.headers, self.body)
@@ -685,11 +733,22 @@ class SIPRequest(SIPMessage):
 
 
 class SIPResponse(SIPMessage):
+    """
+    SIP responses implementation, as defined in :rfc:`3261#section-7.2`.
+
+    :param status: SIP status of the response.
+    :param version: SIP version of the response.
+    :param headers: SIP headers of the response.
+    :param body: SIP body of the response, if any.
+    :param origin: Origin of the response, as a tuple of (host, port), if known.
+    :param destination: Destination of the response, as a tuple of (host, port), if known.
+    """
+
     def __init__(
         self,
         status: SIPStatus,
         version: str,
-        headers: Optional[Headers] = None,
+        headers: Headers,
         body: Optional[SupportsStr] = None,
         origin: Optional[Tuple[str, int]] = None,
         destination: Optional[Tuple[str, int]] = None,
@@ -698,16 +757,19 @@ class SIPResponse(SIPMessage):
         self.status: SIPStatus = status
 
     @property
+    @override
     def start_line(self) -> str:
         return f"{self.version} {self.status.code} {self.status.reason}"
 
     @classmethod
+    @override
     def _parse_start_line(cls, start_line: bytes) -> Dict[str, Any]:
         version, code, reason = start_line.decode("utf-8").split(" ", 2)
         status: SIPStatus = SIPStatus(int(code))
         status.reason = reason
         return dict(status=status, version=version)
 
+    @override
     def __eq__(self, other: Any) -> bool:
         return isinstance(other, SIPResponse) and (
             (self.status, self.version, self.headers, self.body)

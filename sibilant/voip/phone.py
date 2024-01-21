@@ -1,3 +1,5 @@
+"""VoIP phone implementation that uses SIP+RTP for communication."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,8 +8,9 @@ import threading
 import time
 from dataclasses import replace as dataclass_replace
 from functools import partial
-from types import MappingProxyType
+from types import MappingProxyType, TracebackType
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
@@ -16,15 +19,26 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     Union,
 )
 
-import numpy as np
+from sibilant import rtp, sip
+from sibilant.exceptions import (
+    VoIPCallException,
+    VoIPCallTimeoutError,
+    VoIPPhoneException,
+)
 
-from .. import rtp, sip
-from ..constants import DEFAULT_SIP_PORT
-from ..exceptions import VoIPCallException, VoIPCallTimeoutError, VoIPPhoneException
-from ..structures import SIPAddress
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
+
+    from sibilant.structures import SIPAddress
+
+
+# ruff: noqa: ARG002
 
 
 SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
@@ -38,7 +52,18 @@ SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
 ]
 
 
-class VoIPCall:
+class VoIPCall(sip.CallHandler):
+    """
+    VoIP call handler.
+
+    This class implements the :class:`sip.CallHandler` interface, and is used to
+    handle SIP calls events and media streams.
+
+    :param phone: The phone object.
+    :param sip_call: The SIP call object.
+    :param media_flow: The media flow type to use. Defaults to ``SENDRECV``.
+    """
+
     def __init__(
         self,
         phone: VoIPPhone,
@@ -72,7 +97,8 @@ class VoIPCall:
     @property
     def number(self) -> str:
         """The number (or user name) of the remote party."""
-        return self.remote_address.uri.user
+        # FIXME: proper handling of To/From URIs, see https://www.rfc-editor.org/rfc/rfc3261#section-8.1.1.2
+        return self.remote_address.uri.user or "<unknown>"
 
     @property
     def state(self) -> sip.CallState:
@@ -82,12 +108,12 @@ class VoIPCall:
     @property
     def active(self) -> bool:
         """Whether the call is active or soon to be."""
-        return self._sip_call.state in (
+        return self._sip_call.state in {
             sip.CallState.RINGING,
             sip.CallState.ANSWERING,
             sip.CallState.ESTABLISHED,
             sip.CallState.HANGING_UP,
-        )
+        }
 
     @property
     def rtp_profile(self) -> rtp.RTPMediaProfiles:
@@ -95,41 +121,32 @@ class VoIPCall:
         return self._rtp_client.profile
 
     @property
-    def can_accept_calls(self) -> bool:
-        """Whether we can accept calls."""
+    def can_accept_calls(self) -> bool:  # noqa: D102
         return self._phone.can_accept_calls
 
     @property
-    def can_make_calls(self) -> bool:
-        """Whether we can make calls."""
+    def can_make_calls(self) -> bool:  # noqa: D102
         return self._phone.can_make_calls
 
     def track(self) -> None:
         """Track the call."""
         if self.call_id not in self._phone.calls:
-            self._phone.track_call(self)
+            self._phone._track_call(self)
 
     def untrack(self) -> None:
         """Untrack the call."""
         if self.call_id in self._phone.calls:
-            self._phone.untrack_call(self)
+            self._phone._untrack_call(self)
 
-    def prepare_call(self, call: sip.SIPCall) -> None:
-        """Prepare a call to be answered or cancelled."""
+    def prepare_call(self, call: sip.SIPCall) -> None:  # noqa: D102
         self.track()
 
-    def teardown_call(self, call: sip.SIPCall) -> None:
-        """The SIP call is being closed. Untrack it and make sure streams are stopped."""
+    def teardown_call(self, call: sip.SIPCall) -> None:  # noqa: D102
         if not self._rtp_client.closed:
             self._rtp_client.stop()
         self.untrack()
 
-    async def answer(self, call: sip.SIPCall) -> bool:
-        """
-        Answer an incoming call. Returns True if the call was answered.
-        If the call was cancelled by the other party, will internally raise a
-        :class:`asyncio.CancelledError`, that the handler should catch to stop ringing.
-        """
+    async def answer(self, call: sip.SIPCall) -> bool:  # noqa: D102
         # TODO: handle asyncio.CancelledError for early hangup (before answer)
         self._phone.check_can_accept_calls(excluded_calls=[self])
         assert self._phone.on_incoming_call is not None
@@ -143,27 +160,30 @@ class VoIPCall:
 
     def wait_answer(self, timeout: Optional[float] = None) -> bool:
         """
-        Wait for the call to be answered. Returns True if answered, False if not.
+        Wait for the call to be answered.
+
+        Returns True if answered, False if not.
         If a timeout is provided, wait until reached, then raise a :class:`VoIPCallTimeoutError`.
         If the call failed for some other reason, re-raise the failure exception.
 
         :param timeout: Timeout in seconds.
         """
         start_time = time.monotonic()
-        while self.state in (
+        while self.state in {
             sip.CallState.INIT,
             sip.CallState.INVITE,
             sip.CallState.RINGING,
             sip.CallState.ANSWERING,
-        ):
+        }:
             if timeout is not None and time.monotonic() - start_time > timeout:
                 raise VoIPCallTimeoutError(f"Call not answered after {timeout} seconds")
             time.sleep(1e-3)
 
         if self.state == sip.CallState.FAILED:
+            assert isinstance(self._sip_call.failure_exception, Exception)
             raise self._sip_call.failure_exception
 
-        if self.state in (sip.CallState.ESTABLISHED, sip.CallState.CANCELLED):
+        if self.state in {sip.CallState.ESTABLISHED, sip.CallState.CANCELLED}:
             return self.state == sip.CallState.ESTABLISHED
 
         raise VoIPCallException(f"Unexpected call state: {self.state}")
@@ -172,38 +192,37 @@ class VoIPCall:
         """Hangup the call."""
         # send either a SIP BYE or a CANCEL depending on the call state (answered or not)
         if self.state == sip.CallState.ESTABLISHED:
-            asyncio.run_coroutine_threadsafe(
-                self._sip_call.bye(), self._sip_call.client.event_loop
-            ).result()
-        elif self.state in (sip.CallState.INVITE, sip.CallState.RINGING):
+            self._sip_call.client._schedule(self._sip_call.bye()).result()
+        elif self.state in {sip.CallState.INVITE, sip.CallState.RINGING}:
             self._sip_call.set_cancel()
         else:
             raise VoIPCallException(f"Cannot hangup call in state {self.state}")
 
-    def get_rtp_profiles_by_port(self) -> Mapping[int, Sequence[rtp.RTPMediaProfiles]]:
-        """Get the RTP profiles and ports that will be used for calls."""
+    def get_rtp_profiles_by_port(self) -> Mapping[int, Sequence[rtp.RTPMediaProfiles]]:  # noqa: D102
         rtp_clients = [self._rtp_client]
         return {
-            rtp_client.local_port: rtp_client.media_profiles.values()
+            rtp_client.local_port: list(rtp_client.media_profiles.values())
             for rtp_client in rtp_clients
         }
 
-    def get_media_flow(self) -> rtp.MediaFlowType:
-        """Get the default media flow for the calls."""
+    def get_media_flow(self) -> rtp.MediaFlowType:  # noqa: D102
         return self._media_flow
 
-    def establish_call(self, call: sip.SIPCall) -> None:
-        """A call is established. Start handling streams."""
-        assert call.received_sdp is not None
+    def establish_call(self, call: sip.SIPCall) -> None:  # noqa: D102
+        if not call.received_sdp or not call.received_sdp.connection_address:
+            raise VoIPCallException("No RTP connection address in SDP payload")
         self._rtp_client.remote_addr = call.received_sdp.connection_address
         self._rtp_client.start()
         if callable(self._phone.on_call_established):
             self._phone.on_call_established(self)
 
-    def read_audio(self, size: int = rtp.RTPStreamBuffer.DEFAULT_SIZE) -> np.ndarray:
+    def read_audio(
+        self, size: int = rtp.RTPStreamBuffer.DEFAULT_SIZE
+    ) -> NDArray[np.float32]:
         """
         Read incoming audio data from the call, decoded with the appropriate codec,
         as a float32 numpy array in the range [-1, 1].
+
         The rate is unchanged, so the same as the stream profile.
         If no data is available, will return an empty array.
 
@@ -216,10 +235,11 @@ class VoIPCall:
             raise VoIPCallException("Cannot read audio, RTP client closed")
         return self._rtp_client.read_audio(size)
 
-    def write_audio(self, data: np.ndarray) -> int:
+    def write_audio(self, data: NDArray[np.float32]) -> int:
         """
         Write audio data to the outgoing RTP stream, encoded with the appropriate codec,
         given a float32 numpy array in the range [-1, 1].
+
         The rate is fed unchanged, so it must match the stream's profile.
         Returns the number of bytes written.
 
@@ -232,8 +252,7 @@ class VoIPCall:
         return self._rtp_client.write_audio(data)
 
     # TODO: do we have too many startup/shutdown methods? Maybe just one each?
-    def terminate_call(self, call: sip.SIPCall) -> None:
-        """Terminate an established call. Stop handling streams."""
+    def terminate_call(self, call: sip.SIPCall) -> None:  # noqa: D102
         if callable(self._phone.on_call_terminated):
             self._phone.on_call_terminated(self)
         self._rtp_client.stop()
@@ -241,6 +260,8 @@ class VoIPCall:
 
 
 class PhoneState(enum.Enum):
+    """Enum of possible VoIP phone states."""
+
     INACTIVE = "inactive"
     READY = "ready"
     CALLING = "calling"
@@ -254,12 +275,45 @@ TerminatedCallCallback = Callable[[VoIPCall], None]
 
 
 class VoIPPhone:
-    def __init__(
+    """
+    VoIP phone.
+
+    This class is the main high-level interface to the VoIP phone.
+    It combines SIP and RTP clients to handle calls, and provides a high-level
+    interface to the user.
+
+    :param username: The username for registration with the SIP server.
+    :param password: The password for authentication with the SIP server.
+    :param server_host: The address of the SIP server to connect to.
+    :param server_port: The port of the SIP server to connect to.
+        If not provided, it will be determined from the server address.
+    :param display_name: The display name for registering the client user.
+    :param login: The login for authentication with the SIP server.
+        If not provided, the username value will be used instead.
+    :param domain: The domain for registration with the SIP server.
+        If not provided, the server host value will be used instead.
+    :param local_host: The local address to bind the SIP client's socket to.
+        Defaults to 0.0.0.0.
+    :param local_port: The local port to bind the SIP client's socket to.
+        Defaults to 0, which means a random port will be chosen by the OS.
+    :param on_incoming_call: Callback to handle incoming calls. It must be provided to accept calls.
+        The callback will receive a :class:`VoIPCall` object, and must return a boolean
+        indicating whether the call should be accepted or not.
+    :param on_call_established: Optional callback event for established calls.
+        The callback will receive a :class:`VoIPCall` object when a call is established;
+        the return value is ignored.
+    :param on_call_terminated: Optional callback event for terminated calls.
+        The callback will receive a :class:`VoIPCall` object when a call is terminated;
+        the return value is ignored.
+    """
+
+    def __init__(  # noqa: PLR0913
         self,
         username: str,
         password: str,
         server_host: str,
-        server_port: int = DEFAULT_SIP_PORT,
+        server_port: Optional[int] = None,
+        *,
         display_name: Optional[str] = None,
         login: Optional[str] = None,
         domain: Optional[str] = None,
@@ -321,10 +375,12 @@ class VoIPPhone:
         return self._state
 
     def start(self) -> None:
+        """Start the phone, registering with the SIP server."""
         self._sip_client.start()
         self._state = PhoneState.READY
 
     def stop(self) -> None:
+        """Stop the phone, hanging up any active calls and unregistering from the server."""
         self._stopping_event.set()
         call: VoIPCall
         for call in list(self._calls.values()):
@@ -337,10 +393,16 @@ class VoIPPhone:
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exctype: Optional[Type[BaseException]],
+        excinst: Optional[BaseException],
+        exctb: Optional[TracebackType],
+    ) -> None:
         self.stop()
 
-    def check_can_accept_calls(self, excluded_calls=()) -> None:
+    def check_can_accept_calls(self, excluded_calls: Collection[VoIPCall] = ()) -> None:
+        """Check if the phone can accept calls in the current state. Raises an exception if not."""
         if not self._sip_client.registered:
             raise VoIPPhoneException("Phone is not registered with the server.")
         if any(
@@ -355,6 +417,7 @@ class VoIPPhone:
 
     @property
     def can_accept_calls(self) -> bool:
+        """Check if the phone can accept calls in the current state. Returns a boolean."""
         try:
             self.check_can_accept_calls()
         except VoIPPhoneException:
@@ -362,6 +425,7 @@ class VoIPPhone:
         return True
 
     def check_can_make_calls(self) -> None:
+        """Check if the phone can make calls in the current state. Raises an exception if not."""
         if not self._sip_client.registered:
             raise VoIPPhoneException("Phone is not registered with the server.")
         if self._calls:
@@ -370,27 +434,30 @@ class VoIPPhone:
 
     @property
     def can_make_calls(self) -> bool:
+        """Check if the phone can make calls in the current state. Returns a boolean."""
         try:
             self.check_can_make_calls()
         except VoIPPhoneException:
             return False
         return True
 
-    def _create_call(self, sip_call: sip.SIPCall, **kwargs) -> VoIPCall:
+    def _create_call(self, sip_call: sip.SIPCall, **kwargs: Any) -> VoIPCall:
         """
         Create a new call object for the given SIP call.
+
         The call is not tracked by the phone yet, we'll wait for the transaction to start
         with basic sanity checks, and enter a waiting state. VoIPCall will take care of
         registering the call in the phone when it's ready.
         """
-        call = VoIPCall(self, sip_call, **kwargs)
         # do not track yet, wait for the call to at least enter a waiting state
-        return call
+        return VoIPCall(self, sip_call, **kwargs)
 
-    def track_call(self, call: VoIPCall) -> None:
+    def _track_call(self, call: VoIPCall) -> None:
+        """Add the call handler to the active calls."""
         self._calls[call.call_id] = call
 
-    def untrack_call(self, call: VoIPCall) -> None:
+    def _untrack_call(self, call: VoIPCall) -> None:
+        """Remove the call handler from the active calls."""
         self._calls.pop(call.call_id, None)
 
     def call(
@@ -398,6 +465,13 @@ class VoIPPhone:
         contact: Union[sip.SIPAddress, sip.SIPURI, str],
         media_flow: rtp.MediaFlowType = rtp.MediaFlowType.SENDRECV,
     ) -> VoIPCall:
+        """
+        Start a new call to the given contact.
+
+        :param contact: The contact to call.
+        :param media_flow: The media flow type to use.
+        :return: The call handler object.
+        """
         self.check_can_make_calls()
         sip_call = self._sip_client.invite(
             contact,

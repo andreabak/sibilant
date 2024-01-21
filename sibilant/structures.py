@@ -1,18 +1,16 @@
+"""Common SIP / SDP / RTP structures."""
+
 from __future__ import annotations
 
 import re
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Collection, Dict, Mapping, Match, Optional
+from typing import Collection, Dict, Mapping, Match, Optional
 
 from frozendict import frozendict
 from typing_extensions import Self
 
 from .exceptions import SIPParseError
-from .helpers import dataclass
-
-
-if TYPE_CHECKING:
-    from dataclasses import dataclass
+from .helpers import ParseableSerializable, slots_dataclass
 
 
 DEFAULT_SCHEME: str = "sip"
@@ -45,9 +43,9 @@ ADDRESS_PATS: Collection[str] = [
 ]
 
 
-@dataclass(slots=True, frozen=True)
-class SIPURI:
-    """A SIP URI"""
+@slots_dataclass(frozen=True)
+class SIPURI(ParseableSerializable):
+    """A SIP URI."""
 
     host: str
     port: Optional[int] = None
@@ -60,8 +58,8 @@ class SIPURI:
     brackets: bool = False
 
     @classmethod
-    def parse(cls, value: str, force_brackets: Optional[bool] = None) -> SIPURI:
-        """Parse a SIP URI"""
+    def parse(cls, value: str, *, force_brackets: Optional[bool] = None) -> SIPURI:
+        """Parse a SIP URI."""
         match: Optional[Match] = None
         for uri_pat in URI_PATS:
             if match := re.fullmatch(uri_pat, value.strip()):
@@ -101,7 +99,8 @@ class SIPURI:
             brackets=brackets,
         )
 
-    def serialize(self, force_brackets: Optional[bool] = None) -> str:
+    def serialize(self, *, force_brackets: Optional[bool] = None) -> str:
+        """Serialize the SIP URI to a string."""
         password: str = f":{self.password}" if self.password else ""
         login: str = f"{self.user}{password}@" if self.user else ""
         hostname: str = f"{self.host}:{self.port}" if self.port else self.host
@@ -122,7 +121,7 @@ class SIPURI:
         return self.serialize()
 
 
-@dataclass(slots=True, frozen=True)
+@slots_dataclass(frozen=True)
 class SIPAddress:
     """A SIP contact address, with an optional display name and a SIP URI."""
 
@@ -130,17 +129,17 @@ class SIPAddress:
     display_name: Optional[str] = None
 
     @classmethod
-    def parse(cls, value: str, force_brackets: Optional[bool] = None) -> Self:
+    def parse(cls, value: str, *, force_brackets: Optional[bool] = None) -> Self:
         """Parse a SIP address from a string. Optionally with a display name and phone number."""
         match: Optional[Match] = None
         for address_pat in ADDRESS_PATS:
             if match := re.fullmatch(address_pat, value):
                 break
-        match_groups: Dict[str, str] = (match and match.groupdict()) or {}
+        match_groups: Dict[str, str] = match.groupdict() if match else {}
         display_name = match_groups.get("display_name")
-        if display_name and display_name[0] in ("'", '"'):
+        if display_name and display_name[0] in {"'", '"'}:
             display_name = re.sub(r"^\s*([\"'])(.*?)\1\s*$", r"\2", display_name)
-        uri_raw: Optional[str] = (match and match_groups.get("uri")) or None
+        uri_raw: Optional[str] = match_groups.get("uri") if match else None
         if not match or not uri_raw:
             raise SIPParseError(f"Invalid SIP address: {value}")
         assert uri_raw is not None

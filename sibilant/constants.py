@@ -1,3 +1,5 @@
+"""Various constants used by the sibilant library."""
+
 from typing import List, Tuple
 
 

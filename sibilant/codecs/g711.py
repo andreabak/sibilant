@@ -1,15 +1,22 @@
 """
 Audio codecs for the RTP protocol.
+
 The unencoded audio format is float 32-bit PCM, returned as numpy arrays.
 """
 
 from __future__ import annotations
 
 import audioop
+from typing import TYPE_CHECKING
 
 import numpy as np
+from typing_extensions import override
 
 from .base import Codec
+
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 __all__ = [
@@ -21,19 +28,21 @@ __all__ = [
 # ruff: noqa: E221, E241, UP034, PLR2004
 
 
-def ulaw_encode_slow(data: np.ndarray) -> np.ndarray:
-    """Encodes `np.float32` [-1.0, 1.0] data to μ-law-encoded `np.uint8`."""
-    data = (data * (2**15 - 1)).astype(np.int16)
-    sign = ((data >> 8) & 0x80).astype(np.uint8)
-    data = (np.abs(data) + 0x84).astype(np.uint8)
-    exp = ulaw_comp_table.take((data >> 7) & 0xFF)
-    mant = (data >> (exp + 3)) & 0x0F
-    return sign | (exp << 4) | mant
+def ulaw_encode_slow(data: NDArray[np.float32]) -> NDArray[np.uint8]:
+    """Encode `np.float32` [-1.0, 1.0] data to μ-law-encoded `np.uint8`."""
+    data_i16: NDArray[np.int16] = (data * (2**15 - 1)).astype(np.int16)
+    sign: NDArray[np.uint8] = ((data_i16 >> 8) & 0x80).astype(np.uint8)
+    data_u8: NDArray[np.uint8] = (np.abs(data_i16) + 0x84).astype(np.uint8)
+    exp: NDArray[np.uint8] = ulaw_comp_table.take((data_u8 >> 7) & 0xFF)
+    mant: NDArray[np.uint8] = ((data_u8 >> (exp + 3)) & 0x0F).astype(np.uint8)
+    return (sign | (exp << 4) | mant).astype(np.uint8)
 
 
+ulaw_comp_table: NDArray[np.uint8] = np.floor(
+    np.log2(np.clip(np.arange(2**8), 1, None))
+).astype(np.uint8)
 # fmt: off
-ulaw_comp_table = np.floor(np.log2(np.clip(np.arange(2**8), 1, None))).astype(np.uint8)
-ulaw_to_lin_i16_lut = np.array([
+ulaw_to_lin_i16_lut: NDArray[np.int16] = np.array([
     -32124, -31100, -30076, -29052, -28028, -27004, -25980, -24956,
     -23932, -22908, -21884, -20860, -19836, -18812, -17788, -16764,
     -15996, -15484, -14972, -14460, -13948, -13436, -12924, -12412,
@@ -67,37 +76,43 @@ ulaw_to_lin_i16_lut = np.array([
        120,    112,    104,     96,     88,     80,     72,     64,
         56,     48,     40,     32,     24,     16,      8,      0,
 ], dtype=np.int16)
-ulaw_to_lin_f32_lut = ulaw_to_lin_i16_lut.astype(np.float32) / (2 ** 15 - 1)
-lin_u16_to_ulaw_lut = ulaw_encode_slow((np.arange(-2 ** 13, 2 ** 13) / 2 ** 13))
 # fmt: on
+ulaw_to_lin_f32_lut: NDArray[np.float32] = ulaw_to_lin_i16_lut.astype(np.float32) / (
+    2**15 - 1
+)
+lin_u16_to_ulaw_lut: NDArray[np.uint8] = ulaw_encode_slow(
+    (np.arange(-(2**13), 2**13) / 2**13)
+)
 
 
-def alaw_encode_slow(data: np.ndarray) -> np.ndarray:
-    """Encodes `np.float32` [-1.0, 1.0] data to A-law-encoded `np.uint8`."""
-    data = (data * (2**15 - 1)).astype(np.int16)
+def alaw_encode_slow(data: NDArray[np.float32]) -> NDArray[np.uint8]:
+    """Encode `np.float32` [-1.0, 1.0] data to A-law-encoded `np.uint8`."""
+    data_i16: NDArray[np.int16] = (data * (2**15 - 1)).astype(np.int16)
 
     cclip = 32767
-    sign = np.bitwise_not(data) >> 8 & 0x80
-    data = np.where(sign == 0, -data, data)
-    data = np.clip(data, -cclip, cclip)
+    sign = np.bitwise_not(data_i16) >> 8 & 0x80
+    data_i16 = np.where(sign == 0, -data_i16, data_i16)
+    data_i16 = np.clip(data_i16, -cclip, cclip)
 
-    exp = np.zeros_like(data, dtype=np.uint8)
-    mant = np.zeros_like(data, dtype=np.uint8)
+    exp: NDArray[np.uint8] = np.zeros_like(data_i16, dtype=np.uint8)
+    mant: NDArray[np.uint8] = np.zeros_like(data_i16, dtype=np.uint8)
 
-    mask = data >= 256
-    exp[mask] = alaw_comp_table.take((data[mask] >> 8) & 0x7F)
-    mant[mask] = (data[mask] >> (exp[mask] + 3)) & 0x0F
+    mask = data_i16 >= 256
+    exp[mask] = alaw_comp_table.take((data_i16[mask] >> 8) & 0x7F)
+    mant[mask] = (data_i16[mask] >> (exp[mask] + 3)) & 0x0F
 
-    res = np.zeros_like(data, dtype=np.uint8)
+    res: NDArray[np.uint8] = np.zeros_like(data_i16, dtype=np.uint8)
     res[mask] = (exp[mask] << 4) | mant[mask]
-    res[~mask] = data[~mask] >> 4
+    res[~mask] = data_i16[~mask] >> 4
 
     return np.bitwise_xor(res, (sign ^ 0x55))
 
 
+alaw_comp_table: NDArray[np.uint8] = np.floor(
+    np.log2(np.clip(np.arange(2**7), 1, None))
+).astype(np.uint8)
 # fmt: off
-alaw_comp_table = np.floor(np.log2(np.clip(np.arange(2**7), 1, None))).astype(np.uint8)
-alaw_to_lin_i16_lut = np.array([
+alaw_to_lin_i16_lut: NDArray[np.int16] = np.array([
      -5504,  -5248,  -6016,  -5760,  -4480,  -4224,  -4992,  -4736,
      -7552,  -7296,  -8064,  -7808,  -6528,  -6272,  -7040,  -6784,
      -2752,  -2624,  -3008,  -2880,  -2240,  -2112,  -2496,  -2368,
@@ -131,9 +146,13 @@ alaw_to_lin_i16_lut = np.array([
        688,    656,    752,    720,    560,    528,    624,    592,
        944,    912,   1008,    976,    816,    784,    880,    848
 ], dtype=np.int16)
-alaw_to_lin_f32_lut = alaw_to_lin_i16_lut.astype(np.float32) / (2 ** 15 - 1)
-lin_u16_to_alaw_lut = alaw_encode_slow((np.arange(-2 ** 13, 2 ** 13) / 2 ** 13))
 # fmt: on
+alaw_to_lin_f32_lut: NDArray[np.float32] = alaw_to_lin_i16_lut.astype(np.float32) / (
+    2**15 - 1
+)
+lin_u16_to_alaw_lut: NDArray[np.uint8] = alaw_encode_slow(
+    (np.arange(-(2**13), 2**13) / 2**13)
+)
 
 
 # FIXME: these pure-numpy implementations are slow. Consider doing something faster.
@@ -146,9 +165,10 @@ lin_u16_to_alaw_lut = alaw_encode_slow((np.arange(-2 ** 13, 2 ** 13) / 2 ** 13))
 
 
 class PCMUCodec(Codec):
-    """G.711 μ-law to numpy float32 codec"""
+    """G.711 μ-law to numpy float32 codec."""
 
-    def encode(self, data: np.ndarray) -> bytes:
+    @override
+    def encode(self, data: NDArray[np.float32]) -> bytes:
         data_bytes: bytes = (data * (2**15 - 1)).astype(np.int16).tobytes()
         return audioop.lin2ulaw(data_bytes, 2)
         # FIXME: fix and restore numpy implementations / or find better solution
@@ -156,7 +176,8 @@ class PCMUCodec(Codec):
         # data = (data * (2**13 - 1)).astype(np.int16) + 2**13
         # return lin_u16_to_ulaw_lut.take(data).tobytes()
 
-    def decode(self, data: bytes) -> np.ndarray:
+    @override
+    def decode(self, data: bytes) -> NDArray[np.float32]:
         data_bytes: bytes = audioop.ulaw2lin(data, 2)
         return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (
             2**15 - 1
@@ -166,16 +187,18 @@ class PCMUCodec(Codec):
 
 
 class PCMACodec(Codec):
-    """G.711 A-law to numpy float32 codec"""
+    """G.711 A-law to numpy float32 codec."""
 
-    def encode(self, data: np.ndarray) -> bytes:
+    @override
+    def encode(self, data: NDArray[np.float32]) -> bytes:
         data_bytes: bytes = (data * (2**15 - 1)).astype(np.int16).tobytes()
         return audioop.lin2alaw(data_bytes, 2)
         # FIXME: fix and restore numpy implementations / or find better solution
         # data = (data * (2**13 - 1)).astype(np.int16) + 2**13
         # return lin_u16_to_alaw_lut.take(data).tobytes()
 
-    def decode(self, data: bytes) -> np.ndarray:
+    @override
+    def decode(self, data: bytes) -> NDArray[np.float32]:
         data_bytes: bytes = audioop.alaw2lin(data, 2)
         return np.frombuffer(data_bytes, dtype=np.int16).astype(np.float32) / (
             2**15 - 1

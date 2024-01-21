@@ -1,3 +1,5 @@
+"""Classes for RTP packets and related utilities."""
+
 from __future__ import annotations
 
 import enum
@@ -14,30 +16,40 @@ from typing import (
     Optional,
     Type,
     Union,
+    cast,
 )
 
-import numpy as np
 from cbitstruct import CompiledFormat
 from typing_extensions import Self
 
-from ..codecs import Codec, PCMACodec, PCMUCodec
-from ..constants import SUPPORTED_RTP_VERSIONS
-from ..exceptions import RTPUnsupportedCodec, RTPUnsupportedVersion
-from ..helpers import FieldsEnum, FieldsEnumDatatype, dataclass
+from sibilant.codecs import Codec, PCMACodec, PCMUCodec
+from sibilant.constants import SUPPORTED_RTP_VERSIONS
+from sibilant.exceptions import RTPUnsupportedCodec, RTPUnsupportedVersion
+from sibilant.helpers import (
+    FieldsEnum,
+    FieldsEnumDatatype,
+    ParseableSerializableRaw,
+    slots_dataclass,
+)
 
 
 if TYPE_CHECKING:
-    from dataclasses import dataclass
+    import numpy as np
+    from numpy.typing import NDArray
 
 
 class RTPMediaType(enum.Enum):
+    """The media types of RTP media format."""
+
     AUDIO = "audio"
     VIDEO = "video"
     AUDIO_VIDEO = "audio,video"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class RTPMediaFormat(FieldsEnumDatatype):
+    """Represents an RTP media format type."""
+
     payload_type: Union[int, str]
     media_type: RTPMediaType
     encoding_name: str
@@ -48,27 +60,28 @@ class RTPMediaFormat(FieldsEnumDatatype):
     codec_type: Optional[Type[Codec]] = None
     codec: Optional[Codec] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.codec is None and self.codec_type is not None:
             self.codec = self.codec_type()
         elif self.codec_type is None:
-            self.codec_type = type(self.codec)
+            self.codec_type = type(self.codec) if self.codec is not None else None
 
     @property
-    def enum_value(self) -> Any:
+    def enum_value(self) -> Any:  # noqa: D102
         return self.payload_type
 
     @property
     def mimetype(self) -> str:  # TODO: is this correct?
+        """The mimetype of the media format."""
         return f"{self.media_type.value}/{self.encoding_name}".lower()
 
-    def encode(self, data: np.ndarray) -> bytes:
+    def encode(self, data: NDArray[np.float32]) -> bytes:
         """Encode float32 audio in the [-1, 1] range to bytes."""
         if self.codec is None:
             raise RTPUnsupportedCodec(f"No codec set for this media format: {self!r}")
         return self.codec.encode(data)
 
-    def decode(self, data: bytes) -> np.ndarray:
+    def decode(self, data: bytes) -> NDArray[np.float32]:
         """Decode bytes to float32 audio in the [-1, 1] range."""
         if self.codec is None:
             raise RTPUnsupportedCodec(f"No codec set for this media format: {self!r}")
@@ -81,6 +94,8 @@ UNKNOWN_FORMAT = RTPMediaFormat("unknown", RTPMediaType.AUDIO_VIDEO, "unknown", 
 
 
 class RTPMediaProfiles(FieldsEnum):
+    """The known RTP media profiles."""
+
     __wrapped_type__ = RTPMediaFormat
     __allow_unknown__ = True
 
@@ -95,8 +110,8 @@ class RTPMediaProfiles(FieldsEnum):
     codec: Optional[Codec]
 
     mimetype: str
-    encode: Callable[[np.ndarray], bytes]
-    decode: Callable[[bytes], np.ndarray]
+    encode: Callable[[NDArray[np.float32]], bytes]
+    decode: Callable[[bytes], NDArray[np.float32]]
 
     @classmethod
     def match(
@@ -114,12 +129,13 @@ class RTPMediaProfiles(FieldsEnum):
         :param media_format: The media format to match.
         :return: The matched or unknown profile.
         """
-        if payload_type is None and media_format is None:
+        payload_type_raw: Union[int, str]
+        if payload_type is not None:
+            payload_type_raw = payload_type
+        elif media_format is not None:
+            payload_type_raw = media_format.payload_type
+        else:
             raise ValueError("One of `payload_type` or `media_format` must be provided")
-
-        payload_type_raw = (
-            payload_type if payload_type is not None else media_format.payload_type
-        )
 
         media_profile: Optional[RTPMediaProfiles] = None
         try:
@@ -142,7 +158,8 @@ class RTPMediaProfiles(FieldsEnum):
 
     @property
     def fmt(self) -> RTPMediaFormat:
-        return self._wrapped_value_
+        """The wrapped media format."""
+        return cast(RTPMediaFormat, self._wrapped_value_)
 
     # TODO: add custom _missing_ make it so we match profiles where some fields are None by default, but actual packet specifies something
 
@@ -178,8 +195,10 @@ class RTPMediaProfiles(FieldsEnum):
     )
 
 
-@dataclass(slots=True)
-class RTPPacket:
+@slots_dataclass
+class RTPPacket(ParseableSerializableRaw):
+    """Implements RTP packets as defined in :rfc:`3550#section-5.1`."""
+
     # header
     version: int
     padding: bool
@@ -201,21 +220,24 @@ class RTPPacket:
     _ext_header_u32: ClassVar[CompiledFormat] = CompiledFormat("u16u16")
 
     @classmethod
-    def calc_header_len(cls, csrc_count: int, extension: bool, ext_len: int) -> int:
+    def calc_header_len(cls, csrc_count: int, extension: bool, ext_len: int) -> int:  # noqa: FBT001
+        """Calculate the length of the header in bytes."""
         extension_len: int = (
             cls._ext_header_u32.calcsize() // 8 + ext_len * 4 if extension else 0
         )
-        return cls._format_u64.calcsize() // 8 + csrc_count * 4 + extension_len
+        return (
+            cast(int, cls._format_u64.calcsize()) // 8 + csrc_count * 4 + extension_len
+        )
 
     @property
     def duration(self) -> float:
         """Duration of the packet in seconds. Supports only PCMU and PCMA."""
-        if self.payload_type in (RTPMediaProfiles.PCMU, RTPMediaProfiles.PCMA):
+        if self.payload_type in {RTPMediaProfiles.PCMU, RTPMediaProfiles.PCMA}:
             return len(self.payload) / self.payload_type.clock_rate
         raise NotImplementedError
 
     @classmethod
-    def parse(cls, data: bytes) -> Self:
+    def parse(cls, data: bytes) -> Self:  # noqa: PLR0914, D102
         (
             version,
             padding,
@@ -270,17 +292,20 @@ class RTPPacket:
             payload,
         )
 
-    def serialize(self) -> bytes:
-        header_data = self._format_u64.pack(
-            self.version,
-            self.padding,
-            self.extension,
-            self.csrc_count,
-            self.marker,
-            self.payload_type.value,
-            self.sequence,
-            self.timestamp,
-            self.ssrc,
+    def serialize(self) -> bytes:  # noqa: D102
+        header_data: bytes = cast(
+            bytes,
+            self._format_u64.pack(
+                self.version,
+                self.padding,
+                self.extension,
+                self.csrc_count,
+                self.marker,
+                self.payload_type.value,
+                self.sequence,
+                self.timestamp,
+                self.ssrc,
+            ),
         )
         if self.csrc_count:
             header_data += b"".join(int.to_bytes(csrc, 4, "big") for csrc in self.csrc)
@@ -291,6 +316,7 @@ class RTPPacket:
 
     @property
     def header_len(self) -> int:
+        """Length of the header in bytes."""
         return self.calc_header_len(self.csrc_count, self.extension, self.ext_len)
 
     def __len__(self) -> int:
@@ -298,14 +324,17 @@ class RTPPacket:
 
 
 class RTPPacketsStats:
-    def __init__(self):
+    """An analytics utility class that collects statistics about RTP packets."""
+
+    def __init__(self) -> None:
         self.count: int = 0
         self.bytes: int = 0
-        self.duration: int = 0
+        self.duration: float = 0
         self.time: float = 0.0
         self.unimplemented: int = 0
 
-    def add(self, packet: RTPPacket, elapsed: float):
+    def add(self, packet: RTPPacket, elapsed: float) -> None:
+        """Add a packet to the stats."""
         try:
             duration = packet.duration
         except NotImplementedError:
@@ -318,6 +347,7 @@ class RTPPacketsStats:
 
     @contextmanager
     def track(self, packet: RTPPacket) -> Iterator[Self]:
+        """A context manager to track the time taken to process a packet."""
         start_time: int = time.perf_counter_ns()
         yield self
         end_time: int = time.perf_counter_ns()
@@ -325,17 +355,21 @@ class RTPPacketsStats:
 
     @property
     def count_per_sec(self) -> float:
-        return (self.time and (self.count / self.time)) or 0
+        """Number of packets processed per second."""
+        return self.count / self.time if self.time else 0
 
     @property
     def bytes_per_sec(self) -> float:
-        return (self.time and (self.bytes / self.time)) or 0
+        """Number of bytes processed per second."""
+        return self.bytes / self.time if self.time else 0
 
     @property
     def realtime_factor(self) -> float:
-        return (self.time and (self.duration / self.time)) or 0
+        """Realtime factor, i.e. how much faster than realtime the processing was."""
+        return self.duration / self.time if self.time else 0
 
     def format(self) -> str:
+        """Format the stats as a string."""
         return (
             f"{self.count} packets, {self.bytes_per_sec / (1024**2):,.2f} MB/s, "
             f"{self.count_per_sec:,.2f} packets/s, {self.realtime_factor:,.2f}x realtime"
@@ -344,7 +378,7 @@ class RTPPacketsStats:
     def __bool__(self) -> bool:
         return self.time > 0
 
-    def __add__(self, other) -> RTPPacketsStats:
+    def __add__(self, other: object) -> RTPPacketsStats:
         if not isinstance(other, RTPPacketsStats):
             return NotImplemented
 
@@ -356,7 +390,7 @@ class RTPPacketsStats:
         new.unimplemented = self.unimplemented + other.unimplemented
         return new
 
-    def __iadd__(self, other) -> Self:
+    def __iadd__(self, other: object) -> Self:
         if not isinstance(other, RTPPacketsStats):
             return NotImplemented
 
@@ -369,6 +403,8 @@ class RTPPacketsStats:
 
 
 class DTMFEventCode(enum.IntEnum):
+    """The DTMF event codes as defined in :rfc:`4733#section-3.2`."""
+
     DIGIT_0 = 0
     DIGIT_1 = 1
     DIGIT_2 = 2
@@ -389,9 +425,9 @@ class DTMFEventCode(enum.IntEnum):
     D = 15
 
 
-@dataclass(slots=True)
-class DTMFEvent:
-    """Represents a DTMF event as defined in RFC 4733."""
+@slots_dataclass
+class DTMFEvent(ParseableSerializableRaw):
+    """Represents a DTMF event as defined in :rfc:`4733#section-2.3`."""
 
     event_code: DTMFEventCode
     end_of_event: bool
@@ -401,14 +437,17 @@ class DTMFEvent:
     _format_u32: ClassVar[CompiledFormat] = CompiledFormat("u8b1b1u6u16")
 
     @classmethod
-    def parse(cls, data: bytes) -> Self:
+    def parse(cls, data: bytes) -> Self:  # noqa: D102
         event_raw, end_of_event, r, volume_raw, duration = cls._format_u32.unpack(data)
         event_code = DTMFEventCode(event_raw)
         assert r == 0
         volume = -volume_raw
         return cls(event_code, end_of_event, volume, duration)
 
-    def serialize(self) -> bytes:
-        return self._format_u32.pack(
-            self.event_code.value, self.end_of_event, 0, -self.volume, self.duration
+    def serialize(self) -> bytes:  # noqa: D102
+        return cast(
+            bytes,
+            self._format_u32.pack(
+                self.event_code.value, self.end_of_event, 0, -self.volume, self.duration
+            ),
         )

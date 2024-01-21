@@ -1,16 +1,18 @@
+"""SDP session section and fields definitions and implementations."""
+
 from __future__ import annotations
 
 import logging
 from abc import ABC
-from dataclasses import field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field
 from typing import TYPE_CHECKING, Any, Dict, List, MutableMapping, Optional, Tuple
 
-from typing_extensions import Self
+from typing_extensions import Self, override
 
-from ..constants import SUPPORTED_SDP_VERSIONS
-from ..exceptions import SDPParseError
-from ..helpers import StrValueMixin, dataclass
-from ..rtp import MediaFlowType
+from sibilant.constants import SUPPORTED_SDP_VERSIONS
+from sibilant.exceptions import SDPParseError
+from sibilant.helpers import FieldsParserSerializer, StrValueMixin, slots_dataclass
+
 from .common import (
     InactiveFlag,
     RecvOnlyFlag,
@@ -27,11 +29,11 @@ from .common import (
     UnknownAttribute,
 )
 from .media import SDPMedia, get_media_flow_type
-from .time import SDPTime
+from .time import SDPTime  # noqa
 
 
 if TYPE_CHECKING:
-    from dataclasses import dataclass
+    from sibilant.rtp import MediaFlowType
 
 
 __all__ = [
@@ -63,30 +65,31 @@ _logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SDPSessionFields(SDPField, ABC, registry=True, registry_attr="_type"): ...
+class SDPSessionFields(SDPField, ABC, registry=True, registry_attr="_type"):
+    """Base class for SDP session description fields."""
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionVersion(StrValueMixin, SDPSessionFields):
     """
-    SDP version field, defined in :rfc:`4566#section-5.1`.
+    SDP version field, defined in :rfc:`8866#section-5.1`.
 
     Spec::
-        v=0
+        v=0.
     """
 
     _type = "v"
     _description = "protocol version"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.value not in SUPPORTED_SDP_VERSIONS:
             raise SDPParseError(f"Unsupported SDP version {self.value}")
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionOrigin(SDPSessionFields):
     """
-    SDP origin field, defined in :rfc:`4566#section-5.2`
+    SDP origin field, defined in :rfc:`8866#section-5.2`.
 
     Spec::
         o=<username> <sess-id> <sess-version> <nettype> <addrtype> <unicast-address>
@@ -103,6 +106,7 @@ class SDPSessionOrigin(SDPSessionFields):
     unicast_address: str
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         (
             username,
@@ -121,8 +125,8 @@ class SDPSessionOrigin(SDPSessionFields):
             unicast_address=unicast_address,
         )
 
-    def serialize(self) -> str:
-        return " ".join((
+    def serialize(self) -> str:  # noqa: D102
+        return " ".join((  # noqa: FLY002
             self.username,
             self.sess_id,
             self.sess_version,
@@ -132,10 +136,10 @@ class SDPSessionOrigin(SDPSessionFields):
         ))
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionName(StrValueMixin, SDPSessionFields):
     """
-    SDP session name field, defined in :rfc:`4566#section-5.3`.
+    SDP session name field, defined in :rfc:`8866#section-5.3`.
 
     Spec::
         s=<session name>
@@ -146,13 +150,14 @@ class SDPSessionName(StrValueMixin, SDPSessionFields):
 
     @property
     def session_name(self) -> str:
+        """The session name."""
         return self.value
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionInformation(SDPInformationField, SDPSessionFields):
     """
-    SDP session information field, defined in :rfc:`4566#section-5.4`.
+    SDP session information field, defined in :rfc:`8866#section-5.4`.
 
     Spec::
         i=<session description>
@@ -161,10 +166,10 @@ class SDPSessionInformation(SDPInformationField, SDPSessionFields):
     _description = "session information"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionURI(StrValueMixin, SDPSessionFields):
     """
-    SDP session URI field, defined in :rfc:`4566#section-5.5`.
+    SDP session URI field, defined in :rfc:`8866#section-5.5`.
 
     Spec::
         u=<uri>
@@ -175,13 +180,14 @@ class SDPSessionURI(StrValueMixin, SDPSessionFields):
 
     @property
     def uri(self) -> str:
+        """The URI."""
         return self.value
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionEmail(StrValueMixin, SDPSessionFields):
     """
-    SDP session email field, defined in :rfc:`4566#section-5.6`.
+    SDP session email field, defined in :rfc:`8866#section-5.6`.
 
     Spec::
         e=<email-address>
@@ -192,13 +198,14 @@ class SDPSessionEmail(StrValueMixin, SDPSessionFields):
 
     @property
     def email_address(self) -> str:
+        """The email address."""
         return self.value
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionPhone(StrValueMixin, SDPSessionFields):
     """
-    SDP session phone field, defined in :rfc:`4566#section-5.6`.
+    SDP session phone field, defined in :rfc:`8866#section-5.6`.
 
     Spec::
         p=<phone-number>
@@ -209,13 +216,14 @@ class SDPSessionPhone(StrValueMixin, SDPSessionFields):
 
     @property
     def phone_number(self) -> str:
+        """The phone number."""
         return self.value
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionConnection(SDPConnectionField, SDPSessionFields):
     """
-    SDP session connection field, defined in :rfc:`4566#section-5.7`.
+    SDP session connection field, defined in :rfc:`8866#section-5.7`.
 
     Spec::
         c=<nettype> <addrtype> <connection-address>
@@ -224,10 +232,10 @@ class SDPSessionConnection(SDPConnectionField, SDPSessionFields):
     _description = "connection information -- not required if included in all media"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionBandwidth(SDPBandwidthField, SDPSessionFields):
     """
-    SDP session bandwidth field, defined in :rfc:`4566#section-5.8`.
+    SDP session bandwidth field, defined in :rfc:`8866#section-5.8`.
 
     Spec::
         b=<bwtype>:<bandwidth>
@@ -236,10 +244,10 @@ class SDPSessionBandwidth(SDPBandwidthField, SDPSessionFields):
     _description = "zero or more bandwidth information lines"
 
 
-@dataclass(slots=True)
-class SDPSessionTimezoneAdjustment:
+@slots_dataclass
+class SDPSessionTimezoneAdjustment(FieldsParserSerializer):
     """
-    SDP session timezone adjustments, as part of definition in :rfc:`4566#section-5.11`.
+    SDP session timezone adjustments, as part of definition in :rfc:`8866#section-5.11`.
 
     Spec::
         <adjustment time> <offset>
@@ -249,25 +257,25 @@ class SDPSessionTimezoneAdjustment:
     offset: str
 
     @classmethod
-    def from_raw_value(cls, raw_value: str) -> Self:
+    def from_raw_value(cls, raw_value: str) -> Self:  # noqa: D102
         return cls(**cls.parse_raw_value(raw_value))
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:
+    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
         adjustment_time, offset = raw_value.split(" ")
         return dict(adjustment_time=int(adjustment_time), offset=offset)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.adjustment_time} {self.offset}"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.serialize()
 
 
-@dataclass(slots=True)
-class SDPSessionTimezone(SDPSessionFields):
+@slots_dataclass
+class SDPSessionTimezone(SDPSessionFields, FieldsParserSerializer):
     """
-    SDP session timezone field, defined in :rfc:`4566#section-5.11`.
+    SDP session timezone field, defined in :rfc:`8866#section-5.11`.
 
     Spec::
         z=<adjustment time> <offset> <adjustment time> <offset> ....
@@ -279,28 +287,27 @@ class SDPSessionTimezone(SDPSessionFields):
     adjustments: List[SDPSessionTimezoneAdjustment]
 
     @classmethod
-    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:
+    def parse_raw_value(cls, raw_value: str) -> Dict[str, Any]:  # noqa: D102
         split_values = raw_value.split(" ")
         if len(split_values) % 2 != 0:
             raise SDPParseError(
-                f"Number of values in timezone field is not even (got {len(split_values)}): {raw_value}"
+                f"Number of values in timezone field is not even (got {len(split_values)}): "
+                f"{raw_value}"
             )
         adjustments = [
-            SDPSessionTimezoneAdjustment.from_raw_value(
-                " ".join((adjustment_time, offset))
-            )
+            SDPSessionTimezoneAdjustment.from_raw_value(f"{adjustment_time} {offset}")
             for adjustment_time, offset in zip(split_values[::2], split_values[1::2])
         ]
         return dict(adjustments=adjustments)
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return " ".join(str(adjustment) for adjustment in self.adjustments)
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionEncryption(SDPEncryptionField, SDPSessionFields):
     """
-    SDP session encryption field, defined in :rfc:`4566#section-5.12`.
+    SDP session encryption field, defined in :rfc:`8866#section-5.12`.
 
     Spec::
         k=<method>
@@ -311,33 +318,59 @@ class SDPSessionEncryption(SDPEncryptionField, SDPSessionFields):
 
 
 @dataclass
-class SDPSessionAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"): ...
+class SDPSessionAttribute(SDPAttribute, ABC, registry=True, registry_attr="_name"):
+    """Base class for SDP session attributes."""
 
 
-@dataclass(slots=True)
-class UnknownSessionAttribute(UnknownAttribute, SDPSessionAttribute): ...
+@slots_dataclass
+class UnknownSessionAttribute(UnknownAttribute, SDPSessionAttribute):
+    """Catch-all class for unsupported SDP session attributes."""
 
 
-@dataclass(slots=True)
-class RecvOnlySessionFlag(RecvOnlyFlag, SDPSessionAttribute): ...
+@slots_dataclass
+class RecvOnlySessionFlag(RecvOnlyFlag, SDPSessionAttribute):
+    """
+    SDP session attribute for recvonly media flow, defined in :rfc:`8866#section-6.7.1`.
+
+    spec::
+        recvonly
+    """
 
 
-@dataclass(slots=True)
-class SendRecvSessionFlag(SendRecvFlag, SDPSessionAttribute): ...
+@slots_dataclass
+class SendRecvSessionFlag(SendRecvFlag, SDPSessionAttribute):
+    """
+    SDP session attribute for sendrecv media flow, defined in :rfc:`8866#section-6.7.2`.
+
+    spec::
+        sendrecv
+    """
 
 
-@dataclass(slots=True)
-class SendOnlySessionFlag(SendOnlyFlag, SDPSessionAttribute): ...
+@slots_dataclass
+class SendOnlySessionFlag(SendOnlyFlag, SDPSessionAttribute):
+    """
+    SDP session attribute for sendonly media flow, defined in :rfc:`8866#section-6.7.3`.
+
+    spec::
+        sendonly
+    """
 
 
-@dataclass(slots=True)
-class InactiveSessionFlag(InactiveFlag, SDPSessionAttribute): ...
+@slots_dataclass
+class InactiveSessionFlag(InactiveFlag, SDPSessionAttribute):
+    """
+    SDP session attribute for inactive media flow, defined in :rfc:`8866#section-6.7.4`.
+
+    spec::
+        inactive
+    """
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPSessionAttributeField(SDPAttributeField, SDPSessionFields):
     """
-    SDP session attribute field, defined in :rfc:`4566#section-5.13`.
+    SDP session attribute field, defined in :rfc:`8866#section-5.13`.
 
     Spec::
         a=<attribute>
@@ -349,8 +382,13 @@ class SDPSessionAttributeField(SDPAttributeField, SDPSessionFields):
     _description = "zero or more session attribute lines"
 
 
+# TODO: RFC 8866 requires that the order of fields is exactly as defined in the spec. Add tests.
+
+
 @dataclass
 class SDPSession(SDPSection):
+    """SDP section for session description fields, defined in :rfc:`8866#section-5`."""
+
     _fields_base = SDPSessionFields
     _start_field = SDPSessionVersion
 
@@ -369,16 +407,18 @@ class SDPSession(SDPSection):
     attributes: List[SDPSessionAttributeField] = dataclass_field(default_factory=list)
     media: List[SDPMedia] = dataclass_field(default_factory=list)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not len(self.time):
             raise ValueError("SDP session must have at least one time field")
 
     @property
     def mimetype(self) -> str:
+        """The mimetype of the SDP session data. Always ``application/sdp``."""
         return "application/sdp"
 
     @property
     def media_flow_type(self) -> Optional[MediaFlowType]:
+        """The media flow type of the session, if any."""
         return get_media_flow_type(self.attributes)
 
     @classmethod
@@ -389,6 +429,7 @@ class SDPSession(SDPSection):
 
     @property
     def connection_address(self) -> Optional[Tuple[str, int]]:
+        """The advertised connection address and port to be used for media streams, if any."""
         addresses: List[Tuple[str, int]] = [
             (connection.address, media.media.port)
             for media in self.media
