@@ -304,6 +304,7 @@ class MockServer(ABC, Generic[_PT]):
         self.send_thread = None
         self.recv_thread = None
         self.stop_event = threading.Event()
+        self.error = None
 
     def start(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -332,13 +333,14 @@ class MockServer(ABC, Generic[_PT]):
         while not self.stop_event.is_set():
             try:
                 packet: _PT = next(self.packets_iterator)
+                self.send(packet)
             except StopIteration:
                 break
-            except Exception:
+            except Exception as e:
+                self.error = e
                 self.stop_event.set()
                 raise
 
-            self.send(packet)
             # FIXME: if we don't wait, we lose packets. Can we fix?
             #        does this have to do with the socket being non-blocking?
             time.sleep(self.send_delay)
@@ -351,7 +353,8 @@ class MockServer(ABC, Generic[_PT]):
         while not self.stop_event.is_set():
             try:
                 self.recv()
-            except Exception:
+            except Exception as e:
+                self.error = e
                 self.stop_event.set()
                 raise
 

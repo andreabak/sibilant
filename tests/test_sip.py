@@ -264,6 +264,8 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
         except (socket.timeout, BlockingIOError):
             pass
         else:
+            if not data.strip():
+                return
             message = SIPMessage.parse(data, origin=addr)
             self.last_recv_msg = message
             self.recv_count += 1
@@ -376,6 +378,7 @@ class TestSIPClient:
             register_timeout=register_timeout,
             register_expires=register_expires,
             default_response_timeout=default_response_timeout,
+            keep_alive_interval=None,  # disable keep-alive
         )
 
         yield server, client
@@ -464,11 +467,17 @@ class TestSIPClient:
     def _test_invite_incoming(cls, server_packets, expected_states, **kwargs):
         def grab_call_and_wait(client, server):
             call = None
-            while not server.send_done or client._pending_futures:
+            while (
+                not server.send_done
+                or client._pending_futures  # FIXME: might get stuck on keepalive
+            ) and not server.error:
                 if call is None and client.calls:
                     call = next(iter(client.calls.values()))
                 time.sleep(1e-9)
             time.sleep(1e-1)
+            if server.error:
+                client.stop()
+                raise server.error
             return call
 
         return cls._test_invite_wrapper(

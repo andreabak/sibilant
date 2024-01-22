@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
 import enum
 import hashlib
@@ -19,7 +20,6 @@ from dataclasses import replace as dataclass_replace
 from functools import partial
 from types import MappingProxyType, TracebackType
 from typing import (
-    TYPE_CHECKING,
     Any,
     AsyncGenerator,
     Awaitable,
@@ -55,10 +55,6 @@ from sibilant.structures import SIPURI, SIPAddress
 
 from . import headers as hdr
 from .messages import SIPMessage, SIPMethod, SIPRequest, SIPResponse, SIPStatus
-
-
-if TYPE_CHECKING:
-    import concurrent.futures
 
 
 _logger = logging.getLogger(__name__)
@@ -1409,7 +1405,7 @@ class SIPClient:  # noqa: PLR0904
         register_expires: int = 3600,
         default_response_timeout: float = 32.0,
         max_forwards: int = 70,
-        keep_alive_interval: float = 5.0,
+        keep_alive_interval: float | None = 5.0,
     ):
         self.call_handler_factory: CallHandlerFactory = call_handler_factory
 
@@ -1437,7 +1433,11 @@ class SIPClient:  # noqa: PLR0904
         self.register_expires: int = register_expires
         self._register_dialog: SIPRegistration | None = None
 
-        self._keep_alive_interval: float = keep_alive_interval
+        self.generic_timeout: float = (
+            max(self.default_response_timeout, self.register_timeout) * 1.5
+        )
+
+        self._keep_alive_interval: float | None = keep_alive_interval
         self._keep_alive_known_addresses: set[tuple[str, int]] = set()
 
         self._dialogs: MutableMapping[str, SIPDialog] = {}
@@ -1663,7 +1663,12 @@ class SIPClient:  # noqa: PLR0904
     def stop(self) -> None:
         """Stop the SIP client, closing active dialogs and deregistering if needed."""
         if self._dialogs_except_register:
-            self._schedule(self._close_active_dialogs()).result()
+            try:
+                self._schedule(self._close_active_dialogs()).result(
+                    self.generic_timeout
+                )
+            except (asyncio.TimeoutError, concurrent.futures.TimeoutError) as exc:
+                _logger.warning(f"Timeout while closing active dialogs: {exc!r}")
 
         if self.registered:
             self._deregister()
@@ -1720,10 +1725,7 @@ class SIPClient:  # noqa: PLR0904
         everything is cleaned up when stopping.
         """
         terminate_asap: bool = False
-        while (
-            not (self._closing_event.is_set() or terminate_asap)
-            or self._pending_futures
-        ):
+        while not self._closing_event.is_set() or self._pending_futures:
             fut: asyncio.Future | concurrent.futures.Future
             for fut in list(self._pending_futures):
                 if fut.done():
@@ -1737,7 +1739,7 @@ class SIPClient:  # noqa: PLR0904
 
                     self._pending_futures.remove(fut)
 
-                elif self._closing_event.is_set() or terminate_asap:
+                elif self._closing_event.is_set():
                     fut.cancel()
 
             if (
@@ -1775,7 +1777,7 @@ class SIPClient:  # noqa: PLR0904
             raise RuntimeError("Cannot track future from another event loop")
         self._pending_futures.append(future)
 
-    def _schedule(self, coro: Awaitable) -> asyncio.Future | concurrent.futures.Future:
+    def _schedule(self, coro: Awaitable) -> concurrent.futures.Future:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._track_future(future)
         return future
@@ -1878,10 +1880,18 @@ class SIPClient:  # noqa: PLR0904
 
         self._register_dialog = SIPRegistration(self)
 
-        self._schedule(self._register_dialog.register()).result()  # wait
+        try:
+            self._schedule(self._register_dialog.register()).result(
+                self.generic_timeout
+            )
+        except (asyncio.TimeoutError, concurrent.futures.TimeoutError) as exc:
+            _logger.warning(f"Timeout while registering: {exc!r}")
+            self.stop()
+            raise
         _logger.debug(f"Registered with {self.server_host} with user {self._username}")
 
-        self._schedule(self._udp_keep_alive())
+        if self._keep_alive_interval:
+            self._schedule(self._udp_keep_alive())
 
     def _deregister(self) -> None:
         if self._register_dialog is None:
@@ -1893,7 +1903,9 @@ class SIPClient:  # noqa: PLR0904
             self._register_dialog = None
 
         try:
-            self._schedule(_deregister()).result()
+            self._schedule(_deregister()).result(self.generic_timeout)
+        except (asyncio.TimeoutError, concurrent.futures.TimeoutError) as exc:
+            _logger.warning(f"Timeout while deregistering: {exc!r}")
         except SIPException as exc:
             _logger.warning(f"Error while deregistering: {exc}")
 
@@ -1906,14 +1918,17 @@ class SIPClient:  # noqa: PLR0904
 
     async def _udp_keep_alive(self) -> None:
         """Send a periodic UDP keepalive to the server, to keep NAT traversal open."""
+        assert self._keep_alive_interval is not None
         try:
-            while True:
+            while not self._closing_event.is_set():
                 known_addresses = list(self._keep_alive_known_addresses)
                 for addr in known_addresses:
                     sleep_time = self._keep_alive_interval / len(known_addresses)
                     await asyncio.sleep(sleep_time)
                     data = b"\x0d\x0a\x0d\x0a"
                     self._send_bytes(data, addr=addr, send_wait=True)
+                if not known_addresses:
+                    await asyncio.sleep(self._keep_alive_interval)
         except asyncio.CancelledError:
             pass
 
