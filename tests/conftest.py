@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import enum
 import logging
 import re
@@ -7,11 +9,15 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from typing import Tuple, Generic, TypeVar, Iterator, Optional
+from typing import TYPE_CHECKING, Generic, Iterator, TypeVar
 
 import dpkt
 import pytest
 from dpkt.utils import inet_to_str
+
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 
 _logger = logging.getLogger(__name__)
@@ -48,7 +54,7 @@ def get_test_server_options(config):
         raise ValueError(
             "need --test-server command line options to run with a real server"
         )
-    elif not all(phone_kwargs.values()):
+    if not all(phone_kwargs.values()):
         raise ValueError(
             "need ALL these command line options to run with a real server: "
             "--test-server-address, --test-server-username, --test-server-password"
@@ -89,20 +95,19 @@ class PacketType(enum.Enum):
 @dataclass(frozen=True)
 class Packet:
     timestamp: float
-    dest: Optional[Dest]
-    src_addr: Tuple[str, int]
-    dst_addr: Tuple[str, int]
+    dest: Dest | None
+    src_addr: tuple[str, int]
+    dst_addr: tuple[str, int]
     type: PacketType
     data: bytes
 
 
 @pytest.fixture(scope="session")
-def voip_calls():
+def voip_calls():  # noqa: PLR0914
     """
     Parse pcap files, and return an iterable of calls, which are iterables of packets.
     Separate client and server packets, and SIP and RTP packets.
     """
-
     calls = []
 
     pcaps_dir = Path(__file__).parent / "pcaps"
@@ -119,7 +124,7 @@ def voip_calls():
                     continue
 
                 ip = eth.data
-                if ip.p not in (dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP):
+                if ip.p not in {dpkt.ip.IP_PROTO_TCP, dpkt.ip.IP_PROTO_UDP}:
                     continue
                 data, src, sport, dst, dport = (
                     ip.data.data,
@@ -145,7 +150,7 @@ def voip_calls():
                     nonlocal aux_src_str
                     if match := re.search(
                         r"^c *= *IN +IP4 +\b(\d+\.\d+\.\d+\.\d+)\b",
-                        data.decode(),
+                        data.decode(),  # noqa: B023
                         re.M | re.I,
                     ):
                         aux_src_str = match.group(1)
@@ -162,9 +167,9 @@ def voip_calls():
                             dest = Dest.CLIENT
                         extract_aux_ip()
                     elif first_line.startswith(b"SIP/2.0"):
-                        if re.search(rf"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
+                        if re.search(r"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
                             dest = Dest.CLIENT
-                        elif re.search(rf"^CSeq:.*INVITE", data.decode(), re.M | re.I):
+                        elif re.search(r"^CSeq:.*INVITE", data.decode(), re.M | re.I):
                             dest = Dest.SERVER
                             extract_aux_ip()
 
@@ -175,8 +180,7 @@ def voip_calls():
                             if aux_src_str:
                                 known_client_ips.add(aux_src_str)
                         elif dest is Dest.CLIENT:
-                            if src_str in known_client_ips:
-                                known_client_ips.remove(src_str)
+                            known_client_ips.discard(src_str)
                             known_server_ips.add(src_str)
                             if aux_src_str:
                                 known_server_ips.add(aux_src_str)
@@ -193,13 +197,13 @@ def voip_calls():
                 )
 
         def categorize_packet(packet):
-            if packet.src_addr[0] in known_server_ips:
+            if packet.src_addr[0] in known_server_ips:  # noqa: B023
                 return Dest.CLIENT
-            if packet.src_addr[0] in known_client_ips:
+            if packet.src_addr[0] in known_client_ips:  # noqa: B023
                 return Dest.SERVER
-            if packet.dst_addr[0] in known_server_ips:
+            if packet.dst_addr[0] in known_server_ips:  # noqa: B023
                 return Dest.SERVER
-            if packet.dst_addr[0] in known_client_ips:
+            if packet.dst_addr[0] in known_client_ips:  # noqa: B023
                 return Dest.CLIENT
             return None
 
@@ -218,7 +222,7 @@ def voip_calls():
     return tuple(calls)
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets(voip_calls):
     """Return a list of SIP packets from all the calls."""
     return [
@@ -229,31 +233,31 @@ def sip_packets(voip_calls):
     ]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_requests(sip_packets):
     """Return a list of SIP requests from all the calls."""
     return [packet for packet in sip_packets if not packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_responses(sip_packets):
     """Return a list of SIP responses from all the calls."""
     return [packet for packet in sip_packets if packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets_from_client(sip_packets):
     """Return a list of SIP packets from the client."""
     return [packet for packet in sip_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture
+@pytest.fixture()
 def sip_packets_from_server(sip_packets):
     """Return a list of SIP packets from the server."""
     return [packet for packet in sip_packets if packet.dest == Dest.CLIENT]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets(voip_calls):
     """Return a list of RTP packets from all the calls."""
     return [
@@ -264,13 +268,13 @@ def rtp_packets(voip_calls):
     ]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets_from_client(rtp_packets):
     """Return a list of RTP packets from the client."""
     return [packet for packet in rtp_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture
+@pytest.fixture()
 def rtp_packets_from_server(rtp_packets):
     """Return a list of RTP packets from the server."""
     return [packet for packet in rtp_packets if packet.dest == Dest.CLIENT]
@@ -300,6 +304,7 @@ class MockServer(ABC, Generic[_PT]):
         self.send_thread = None
         self.recv_thread = None
         self.stop_event = threading.Event()
+        self.error = None
 
     def start(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -328,13 +333,14 @@ class MockServer(ABC, Generic[_PT]):
         while not self.stop_event.is_set():
             try:
                 packet: _PT = next(self.packets_iterator)
+                self.send(packet)
             except StopIteration:
                 break
-            except Exception:
+            except Exception as e:
+                self.error = e
                 self.stop_event.set()
                 raise
 
-            self.send(packet)
             # FIXME: if we don't wait, we lose packets. Can we fix?
             #        does this have to do with the socket being non-blocking?
             time.sleep(self.send_delay)
@@ -347,7 +353,8 @@ class MockServer(ABC, Generic[_PT]):
         while not self.stop_event.is_set():
             try:
                 self.recv()
-            except Exception:
+            except Exception as e:
+                self.error = e
                 self.stop_event.set()
                 raise
 
@@ -363,5 +370,10 @@ class MockServer(ABC, Generic[_PT]):
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exctype: type[BaseException] | None,
+        excinst: BaseException | None,
+        exctb: TracebackType | None,
+    ) -> None:
         self.stop()

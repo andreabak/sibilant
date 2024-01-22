@@ -1,4 +1,7 @@
+"""Sibilant is a pure-Python VoIP/SIP/RTP library."""
+
 from ._package_metadata import get_metadata as _metadata
+
 
 __title__ = _metadata("Name", ["project", "name"])
 __description__ = _metadata("Summary", ["project", "description"])

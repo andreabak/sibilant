@@ -1,16 +1,16 @@
+"""SDP time section and fields definitions and implementations."""
+
 from __future__ import annotations
 
 import re
 from abc import ABC
-from typing import Optional, List, TYPE_CHECKING
-from typing_extensions import Self
 
-from ..exceptions import SDPParseError
-from ..helpers import dataclass
+from typing_extensions import Self, override
+
+from sibilant.exceptions import SDPParseError
+from sibilant.helpers import slots_dataclass
+
 from .common import SDPField, SDPSection
-
-if TYPE_CHECKING:
-    from dataclasses import dataclass
 
 
 __all__ = [
@@ -21,15 +21,15 @@ __all__ = [
 ]
 
 
-@dataclass
+@slots_dataclass
 class SDPTimeFields(SDPField, ABC, registry=True, registry_attr="_type"):
-    ...
+    """Base class for SDP time description fields."""
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPTimeTime(SDPTimeFields):
     """
-    SDP time field, defined in :rfc:`4566#section-5.9`.
+    SDP time field, defined in :rfc:`8866#section-5.9`.
 
     Spec::
         t=<start-time> <stop-time>
@@ -42,18 +42,19 @@ class SDPTimeTime(SDPTimeFields):
     stop_time: int
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
         start_time, stop_time = raw_value.split(" ")
         return cls(start_time=int(start_time), stop_time=int(stop_time))
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.start_time} {self.stop_time}"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPTimeRepeat(SDPTimeFields):
     """
-    SDP time repeat field, defined in :rfc:`4566#section-5.10`.
+    SDP time repeat field, defined in :rfc:`8866#section-5.10`.
 
     Spec::
         r=<repeat interval> <active duration> <offsets from start-time>
@@ -64,11 +65,13 @@ class SDPTimeRepeat(SDPTimeFields):
 
     interval: int
     duration: int
-    offsets: List[int]
+    offsets: list[int]
 
     @classmethod
+    @override
     def from_raw_value(cls, field_type: str, raw_value: str) -> Self:
-        # parse the raw value. N.B. offset could be strings to denote days, hours, minutes, seconds, so they need to be converted to ints
+        # parse the raw value. N.B. offset could be strings to denote days, hours, minutes, seconds,
+        # so they need to be converted to ints
         def parse_time(time_str: str) -> int:
             if isinstance(time_str, int):
                 return time_str
@@ -88,14 +91,16 @@ class SDPTimeRepeat(SDPTimeFields):
             offsets=[parse_time(offset) for offset in offsets],
         )
 
-    def serialize(self) -> str:
+    def serialize(self) -> str:  # noqa: D102
         return f"{self.interval} {self.duration} {' '.join(str(offset) for offset in self.offsets)}"
 
 
-@dataclass(slots=True)
+@slots_dataclass
 class SDPTime(SDPSection):
+    """SDP section for time description fields, defined in :rfc:`8866#section-5.9`."""
+
     _fields_base = SDPTimeFields
     _start_field = SDPTimeTime
 
     time: SDPTimeTime
-    repeat: Optional[SDPTimeRepeat] = None
+    repeat: SDPTimeRepeat | None = None

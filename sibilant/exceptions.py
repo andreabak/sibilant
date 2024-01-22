@@ -1,9 +1,16 @@
+"""Exception calsses for the Sibilant library."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
 class SibilantException(Exception):
-    """Base class for all custom library exceptions"""
+    """Base class for all custom library exceptions."""
 
 
 class ParseError(SibilantException, ValueError):
-    """Raised when a packet cannot be parsed"""
+    """Raised when a packet cannot be parsed."""
 
 
 class SIPException(SibilantException):
@@ -13,7 +20,7 @@ class SIPException(SibilantException):
 class SIPMessageException(SIPException, IOError):
     """Exceptions related to SIP messages."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any):
         """Initialize SIPRequestException with `request` and `response` objects."""
         response = kwargs.pop("response", None)
         self.response = response
@@ -88,7 +95,7 @@ class RTPMismatchedStreamError(RTPException):
 
 
 class RTPBrokenStreamError(RTPException):
-    """Exception raised when a stream is broken (e.g. too many packets are missing)"""
+    """Exception raised when a stream is broken (e.g. too many packets are missing)."""
 
 
 class RTPUnhandledPayload(RTPException, NotImplementedError):
