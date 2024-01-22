@@ -23,9 +23,9 @@
   - [ ] more unit tests on functions/methods
   - [ ] concrete end-to-end test with real test SIP server
 - [ ] add github actions
-  - [ ] check pre-commit
-  - [ ] run tests
-  - [ ] check coverage
+  - [x] check pre-commit
+  - [x] run tests
+  - [x] check coverage
 - [ ] docs
   - [ ] look into RTD
   - [ ] autodoc
