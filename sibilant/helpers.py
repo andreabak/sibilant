@@ -584,7 +584,9 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
         str_value = raw_value.strip()
         splitter = cls._splitter or cls._separator
         str_values: list[str]
-        if isinstance(splitter, str):
+        if not str_value:
+            str_values = []
+        elif isinstance(splitter, str):
             str_values = str_value.split(splitter)
         elif isinstance(splitter, Pattern):
             str_values = splitter.split(str_value)
