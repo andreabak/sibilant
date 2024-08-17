@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import logging
 import threading
 import time
 from dataclasses import replace as dataclass_replace
@@ -34,6 +35,9 @@ if TYPE_CHECKING:
 
 
 # ruff: noqa: ARG002
+
+
+_logger = logging.getLogger(__name__)
 
 
 SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
@@ -377,7 +381,18 @@ class VoIPPhone:
         self._stopping_event.set()
         call: VoIPCall
         for call in list(self._calls.values()):
-            call.hangup()
+            try:
+                call.hangup()
+            except VoIPCallException as exc:
+                if call.state in {
+                    sip.CallState.HANGING_UP,
+                    sip.CallState.HUNG_UP,
+                    sip.CallState.CANCELLED,
+                    sip.CallState.FAILED,
+                }:
+                    pass
+                else:
+                    _logger.warning(f"Error while hanging up call: {exc}")
         self._sip_client.stop()
         self._state = PhoneState.INACTIVE
         self._stopping_event.clear()
