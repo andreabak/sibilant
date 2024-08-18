@@ -654,7 +654,7 @@ class RTPClient:
         else:  # FIXME: kinda hacky, should probably happen somewhere else?
             assert isinstance(packet.payload_type.payload_type, int)
             profile = self._media_profiles[packet.payload_type.payload_type]
-            if profile == RTPMediaProfiles.TELEPHONE_EVENT:
+            if profile.encoding_name == RTPMediaProfiles.TELEPHONE_EVENT.encoding_name:
                 self._handle_telephone_event(packet)
                 if packet.ssrc == recv_stream.ssrc:
                     recv_stream.sequence = packet.sequence
