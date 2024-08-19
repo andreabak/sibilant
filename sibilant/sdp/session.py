@@ -126,13 +126,13 @@ class SDPSessionOrigin(SDPSessionFields):
         )
 
     def serialize(self) -> str:  # noqa: D102
-        return " ".join((  # noqa: FLY002
-            self.username,
-            self.sess_id,
-            self.sess_version,
-            self.nettype,
-            self.addrtype,
-            self.unicast_address,
+        return " ".join((
+            str(self.username),
+            str(self.sess_id),
+            str(self.sess_version),
+            str(self.nettype),
+            str(self.addrtype),
+            str(self.unicast_address),
         ))
 
 
