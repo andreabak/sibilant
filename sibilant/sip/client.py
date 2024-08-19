@@ -2013,7 +2013,7 @@ class SIPClient:  # noqa: PLR0904
         # TODO: review correctness of this method logic
         route: list[hdr.Contact] = []
         if (record_route_hdr := message.headers.get("Record-Route")) is not None:
-            route = list(reversed(record_route_hdr.contacts))
+            route = list(reversed(record_route_hdr.values))
         return hdr.RouteHeader(route)
 
     def prepare_headers(  # noqa: PLR0913
