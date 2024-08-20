@@ -334,24 +334,24 @@ class SIPDialog(ABC):
         self,
         timeout: float | None = None,
         *,
-        discard_trying: bool = True,
+        discard_trying_and_info: bool = True,
         more_discard_statuses: Collection[SIPStatus] = (),
     ) -> SIPMessage:
         """
         Wait for the next message to arrive in the queue.
 
         :param timeout: The timeout for the wait. None for default, -1 for no timeout.
-        :param discard_trying: Whether to discard TRYING responses.
+        :param discard_trying_and_info: Whether to discard TRYING and informational responses.
         :return: The next message.
         :raises asyncio.TimeoutError: If the timeout is reached.
         """
         if timeout is None:
             timeout = self._response_timeout
         msg_getter: Callable[[], Awaitable[SIPMessage]] = self._recv_queue.get
-        if discard_trying or more_discard_statuses:
+        if discard_trying_and_info or more_discard_statuses:
             statuses: set[SIPStatus] = set(more_discard_statuses)
-            if discard_trying:
-                statuses.add(SIPStatus.TRYING)
+            if discard_trying_and_info:
+                statuses |= {SIPStatus.TRYING, SIPStatus.SESSION_PROGRESS}
             msg_getter = partial(discard_statuses, msg_getter, statuses=statuses)
         if timeout != -1:
             msg_getter = partial(asyncio.wait_for, msg_getter(), timeout)
@@ -934,7 +934,7 @@ class SIPCall(SIPDialog):
         request: SIPMessage
         # we now wait for the phone to answer, or for a CANCEL request, whatever comes first
         incoming_request = asyncio.create_task(
-            self._wait_for_message(),
+            self._wait_for_message(more_discard_statuses={SIPStatus.SESSION_PROGRESS}),
             name=f"{self.__class__.__name__}._wait_for_message-{self._call_id} task",
         )
         phone_answer = asyncio.create_task(
