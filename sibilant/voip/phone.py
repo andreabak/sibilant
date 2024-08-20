@@ -17,6 +17,7 @@ from typing import (
     Collection,
     Mapping,
     Sequence,
+    Union,
 )
 
 from sibilant import rtp, sip
@@ -257,6 +258,11 @@ class VoIPCall(sip.CallHandler):
         self._rtp_client.stop()
         self.teardown_call(self._sip_call)
 
+    def on_call_failure(self, call: sip.SIPCall, error: Exception) -> bool | None:  # noqa: D102
+        if callable(self._phone.on_call_failure):
+            return self._phone.on_call_failure(self, error)
+        return False
+
 
 class PhoneState(enum.Enum):
     """Enum of possible VoIP phone states."""
@@ -271,6 +277,7 @@ class PhoneState(enum.Enum):
 IncomingCallCallback = Callable[[VoIPCall], bool]
 EstablishedCallCallback = Callable[[VoIPCall], None]
 TerminatedCallCallback = Callable[[VoIPCall], None]
+CallFailureCallback = Callable[[VoIPCall, Exception], Union[bool, None]]
 
 
 class VoIPPhone:
@@ -304,6 +311,10 @@ class VoIPPhone:
     :param on_call_terminated: Optional callback event for terminated calls.
         The callback will receive a :class:`VoIPCall` object when a call is terminated;
         the return value is ignored.
+    :param on_call_failure: Optional callback event for failed calls.
+        The callback will receive a :class:`VoIPCall` and :class:`Exception` objects
+        when an unrecoverable error occurs during the call;
+        if the callback returns True, the exception will be suppressed.
     """
 
     def __init__(  # noqa: PLR0913
@@ -321,6 +332,7 @@ class VoIPPhone:
         on_incoming_call: IncomingCallCallback | None = None,
         on_call_established: EstablishedCallCallback | None = None,
         on_call_terminated: TerminatedCallCallback | None = None,
+        on_call_failure: CallFailureCallback | None = None,
         sip_kwargs: Mapping[str, Any] | None = None,
         rtp_kwargs: Mapping[str, Any] | None = None,
     ):
@@ -342,6 +354,7 @@ class VoIPPhone:
         self.on_incoming_call: IncomingCallCallback | None = on_incoming_call
         self.on_call_established: EstablishedCallCallback | None = on_call_established
         self.on_call_terminated: TerminatedCallCallback | None = on_call_terminated
+        self.on_call_failure: CallFailureCallback | None = on_call_failure
 
         self._calls: dict[str, VoIPCall] = {}
         """Mapping of currently active calls, by call ID."""
@@ -383,7 +396,7 @@ class VoIPPhone:
         for call in list(self._calls.values()):
             try:
                 call.hangup()
-            except VoIPCallException as exc:
+            except VoIPCallException as exc:  # noqa: PERF203
                 if call.state in {
                     sip.CallState.HANGING_UP,
                     sip.CallState.HUNG_UP,

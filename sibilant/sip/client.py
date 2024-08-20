@@ -172,6 +172,12 @@ class CallHandler(Protocol):
     def terminate_call(self, call: SIPCall) -> None:
         """Terminate an established call. Stop handling streams."""
 
+    def on_call_failure(self, call: SIPCall, error: Exception) -> bool | None:
+        """
+        Invoked when an unrecoverable error happens during the call process.
+        It can suppress raising the given error by returning True.
+        """
+
 
 CallHandlerFactory = Callable[["SIPCall"], CallHandler]
 
@@ -840,11 +846,12 @@ class SIPCall(SIPDialog):
         try:
             yield
         # TODO: better handle other exceptions, like bad request, and send appropriate response
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self._state = CallState.FAILED
             self._failure_exception = exc
             self._close()
-            raise
+            if not self._handler.on_call_failure(self, exc):  # allow suppressing raise
+                raise
 
     async def invite(self) -> None:
         """Start an outgoing call, and wait for the other party to answer."""
@@ -1878,6 +1885,7 @@ class SIPClient:  # noqa: PLR0904
         if self._register_dialog is not None:
             raise RuntimeError("Registration already active")
 
+        _logger.debug(f"Registering with {self.server_host} with user {self._username}")
         self._register_dialog = SIPRegistration(self)
 
         try:
@@ -1888,7 +1896,6 @@ class SIPClient:  # noqa: PLR0904
             _logger.warning(f"Timeout while registering: {exc!r}")
             self.stop()
             raise
-        _logger.debug(f"Registered with {self.server_host} with user {self._username}")
 
         if self._keep_alive_interval:
             self._schedule(self._udp_keep_alive())

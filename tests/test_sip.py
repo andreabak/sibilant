@@ -307,6 +307,9 @@ class TestCallHandler(CallHandler):
     def terminate_call(self, call: SIPCall) -> None:
         pass
 
+    def on_call_failure(self, call: SIPCall, error: Exception) -> bool | None:
+        pass
+
 
 def mute_caplog(caplog, mute, logger_name=None):
     """Return a context manager to maybe mute the caplog for the given logger."""
