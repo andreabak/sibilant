@@ -1192,6 +1192,8 @@ class SIPCall(SIPDialog):
         if copy_via and "Via" not in invite.headers:
             raise RuntimeError("INVITE request has no Via header")
         via_hdr: hdr.ViaHeader = invite.headers["Via"]
+        route_hdr = self._client.generate_route_hdr(last_recv_msg or invite)
+
         return self._generate_request(
             SIPMethod.ACK,
             add_via=False,
@@ -1199,7 +1201,7 @@ class SIPCall(SIPDialog):
             cseq_method=SIPMethod.ACK,
             via_hdr=via_hdr if copy_via else self._client.generate_via_hdr(),
             **kwargs,
-            extra_headers=[self._client.generate_route_hdr(last_recv_msg or invite)],
+            extra_headers=[route_hdr] if route_hdr is not None else (),
         )
 
     def _cancel_request(self, invite: SIPRequest) -> SIPRequest:
@@ -2009,19 +2011,20 @@ class SIPClient:  # noqa: PLR0904
         via_entry.rport = True
         return hdr.ViaHeader([via_entry])
 
-    def generate_route_hdr(self, message: SIPMessage) -> hdr.RouteHeader:
+    def generate_route_hdr(self, message: SIPMessage) -> hdr.RouteHeader | None:
         """
         Generate a Route header for a SIP message.
 
         :param message: the SIP message to generate the Route header for.
-            If no Record-Route header is present, the Route header will be empty.
-        :return: the generated Route header.
+            Will return None if no Record-Route header is present.
+        :return: the generated Route header or None.
         """
         # TODO: review correctness of this method logic
-        route: list[hdr.Contact] = []
+        route: list[hdr.Contact]
         if (record_route_hdr := message.headers.get("Record-Route")) is not None:
             route = list(reversed(record_route_hdr.values))
-        return hdr.RouteHeader(route)
+            return hdr.RouteHeader(route)
+        return None
 
     def prepare_headers(  # noqa: PLR0913
         self,
