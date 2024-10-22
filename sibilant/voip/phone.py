@@ -26,6 +26,7 @@ from sibilant.exceptions import (
     VoIPCallTimeoutError,
     VoIPPhoneException,
 )
+from sibilant.sip import CallSide
 
 
 if TYPE_CHECKING:
@@ -50,6 +51,13 @@ SUPPORTED_MEDIA_FORMATS: Collection[rtp.RTPMediaFormat] = [
     ]
     if (fmt := profile.fmt) is not None
 ]
+
+
+class CallDirection(enum.Enum):
+    """Enum representing the direction of the call (i.e. outgoing/incoming)."""
+
+    INCOMING = "incoming"
+    OUTGOING = "outgoing"
 
 
 class VoIPCall(sip.CallHandler):
@@ -88,6 +96,15 @@ class VoIPCall(sip.CallHandler):
     def call_id(self) -> str:
         """The SIP call ID."""
         return self._sip_call.call_id
+
+    @property
+    def direction(self) -> CallDirection:
+        """The direction of the call."""
+        return (
+            CallDirection.OUTGOING
+            if self._sip_call.own_side == CallSide.CALLER
+            else CallDirection.INCOMING
+        )
 
     @property
     def remote_address(self) -> SIPAddress:
