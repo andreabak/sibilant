@@ -60,7 +60,7 @@ class CallDirection(enum.Enum):
     OUTGOING = "outgoing"
 
 
-class VoIPCall(sip.CallHandler):
+class VoIPCall(sip.CallHandler):  # noqa: PLR0904
     """
     VoIP call handler.
 
@@ -91,6 +91,9 @@ class VoIPCall(sip.CallHandler):
             remote_addr=remote_addr,
             media_formats=SUPPORTED_MEDIA_FORMATS,
         )
+
+        self._start_time: float | None = None
+        self._end_time: float | None = None
 
     @property
     def call_id(self) -> str:
@@ -136,6 +139,16 @@ class VoIPCall(sip.CallHandler):
     def rtp_profile(self) -> rtp.RTPMediaProfiles:
         """The RTP profile."""
         return self._rtp_client.profile
+
+    @property
+    def start_time(self) -> float | None:
+        """The timestamp of the start of the call. None if not yet established."""
+        return self._start_time
+
+    @property
+    def end_time(self) -> float | None:
+        """The timestamp of the end of the call. None if not yet established or still ongoing."""
+        return self._end_time
 
     @property
     def can_accept_calls(self) -> bool:  # noqa: D102
@@ -230,6 +243,7 @@ class VoIPCall(sip.CallHandler):
             raise VoIPCallException("No RTP connection address in SDP payload")
         self._rtp_client.remote_addr = call.received_sdp.connection_address
         self._rtp_client.start()
+        self._start_time = time.time()
         if callable(self._phone.on_call_established):
             self._phone.on_call_established(self)
 
@@ -273,6 +287,7 @@ class VoIPCall(sip.CallHandler):
         if callable(self._phone.on_call_terminated):
             self._phone.on_call_terminated(self)
         self._rtp_client.stop()
+        self._end_time = time.time()
         self.teardown_call(self._sip_call)
 
     def on_call_failure(self, call: sip.SIPCall, error: Exception) -> bool | None:  # noqa: D102
