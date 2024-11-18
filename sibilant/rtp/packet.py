@@ -6,14 +6,7 @@ import enum
 import time
 from contextlib import contextmanager
 from dataclasses import field as dataclass_field, replace as dataclass_replace
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    ClassVar,
-    Iterator,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterator, cast
 
 from cbitstruct import CompiledFormat
 from typing_extensions import Self
@@ -396,54 +389,3 @@ class RTPPacketsStats:
         self.time += other.time
         self.unimplemented += other.unimplemented
         return self
-
-
-class DTMFEventCode(enum.IntEnum):
-    """The DTMF event codes as defined in :rfc:`4733#section-3.2`."""
-
-    DIGIT_0 = 0
-    DIGIT_1 = 1
-    DIGIT_2 = 2
-    DIGIT_3 = 3
-    DIGIT_4 = 4
-    DIGIT_5 = 5
-    DIGIT_6 = 6
-    DIGIT_7 = 7
-    DIGIT_8 = 8
-    DIGIT_9 = 9
-    STAR = 10
-    ASTERISK = STAR
-    POUND = 11
-    HASH = POUND
-    A = 12
-    B = 13
-    C = 14
-    D = 15
-
-
-@slots_dataclass
-class DTMFEvent(ParseableSerializableRaw):
-    """Represents a DTMF event as defined in :rfc:`4733#section-2.3`."""
-
-    event_code: DTMFEventCode
-    end_of_event: bool
-    volume: int
-    duration: int
-
-    _format_u32: ClassVar[CompiledFormat] = CompiledFormat("u8b1b1u6u16")
-
-    @classmethod
-    def parse(cls, data: bytes) -> Self:  # noqa: D102
-        event_raw, end_of_event, r, volume_raw, duration = cls._format_u32.unpack(data)
-        event_code = DTMFEventCode(event_raw)
-        assert r == 0
-        volume = -volume_raw
-        return cls(event_code, end_of_event, volume, duration)
-
-    def serialize(self) -> bytes:  # noqa: D102
-        return cast(
-            bytes,
-            self._format_u32.pack(
-                self.event_code.value, self.end_of_event, 0, -self.volume, self.duration
-            ),
-        )
