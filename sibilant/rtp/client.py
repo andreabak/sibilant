@@ -514,20 +514,26 @@ class RTPClient:
         _socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
         _socket.setblocking(False)
 
-        dynamic_port: bool = self._local_addr[1] == 0
+        attempt: int = 0
+        random_port: bool = self._local_addr[1] == 0
         while True:
-            if dynamic_port:
-                self._local_addr = (self._local_addr[0], DEFAULT_RTP_PORT_RANGE[0])
+            if random_port:
+                self._local_addr = (
+                    self._local_addr[0],
+                    random.randint(*DEFAULT_RTP_PORT_RANGE) // 2 * 2,
+                )
             try:
                 _socket.bind(self._local_addr)
                 break
             except OSError as e:
-                if (
-                    dynamic_port
-                    and e.errno == errno.EADDRINUSE
-                    and self._local_addr[1] < DEFAULT_RTP_PORT_RANGE[1]
-                ):
-                    self._local_addr = (self._local_addr[0], self._local_addr[1] + 2)
+                if random_port and e.errno == errno.EADDRINUSE:
+                    if attempt >= 100:
+                        raise ConnectionError(
+                            "Failed to bind to RTP port "
+                            f"(randomly picked in range {DEFAULT_RTP_PORT_RANGE!r}) "
+                            f"after {attempt} attempts"
+                        ) from e
+                    attempt += 1
                 else:
                     raise
 
