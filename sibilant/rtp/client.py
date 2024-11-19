@@ -12,7 +12,7 @@ import time
 from collections import deque
 from io import RawIOBase
 from types import MappingProxyType, TracebackType
-from typing import TYPE_CHECKING, Any, Collection, Literal, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Collection, Literal, Mapping
 
 import numpy as np
 from typing_extensions import Buffer, Self
@@ -27,7 +27,7 @@ from sibilant.exceptions import (
 )
 from sibilant.helpers import db_to_amplitude
 
-from .dtmf import DTMFEvent, generate_dtmf
+from .dtmf import DTMFCode, DTMFEvent, generate_dtmf
 from .packet import (
     RTPMediaFormat,
     RTPMediaProfiles,
@@ -457,6 +457,7 @@ class RTPClient:
         *,
         send_delay_factor: float = 1.0,
         pre_bind: bool = True,
+        dtmf_events_callback: Callable[[DTMFCode], None] | None = None,
     ):
         self._local_addr: tuple[str, int] = local_addr
         self._remote_addr: tuple[str, int] | None = remote_addr
@@ -508,6 +509,10 @@ class RTPClient:
         self._recv_thread: threading.Thread | None = None
         self._send_thread: threading.Thread | None = None
         self._last_send_time_ns: int | None = None
+
+        self.dtmf_events_callback: Callable[[DTMFCode], None] | None = (
+            dtmf_events_callback
+        )
 
         # TODO: move these to the streams?
         self._recv_stats: RTPPacketsStats = RTPPacketsStats()
@@ -875,8 +880,10 @@ class RTPClient:
         return self._mix_recv_audio_streams(size)
 
     def _handle_telephone_event(self, packet: RTPPacket) -> None:
-        """Handles telephone event packets."""
-        DTMFEvent.parse(packet.payload)
+        """Handle telephone event packets."""
+        if self.dtmf_events_callback is not None:
+            dtmf = DTMFEvent.parse(packet.payload)
+            self.dtmf_events_callback(dtmf.event_code)
 
     def write(self, data: bytes) -> int:
         """
