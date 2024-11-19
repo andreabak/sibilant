@@ -29,10 +29,22 @@ jobs:
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
       - name: Run pre-commit
+        env:
+          REF_BEFORE: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+          REF_AFTER: ${{ github.event_name == 'pull_request' && github.head_ref || github.event.after }}
         run: |
-          git switch -C ${{ github.base_ref }} --track origin/${{ github.base_ref }}
-          git switch -C ${{ github.head_ref }} --track origin/${{ github.head_ref }}
-          pre-commit run --from-ref ${{ github.base_ref }} --to-ref ${{ github.head_ref }}
+          # make sure dropped commits are fetched
+          git fetch origin $REF_BEFORE:$REF_BEFORE
+          # if it's a push, check since the common ancestor of the before/after (for forced pushes)
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            export REF_BEFORE=$(git merge-base $REF_BEFORE $REF_AFTER)
+          fi
+          # make sure gitlint knows which commits to lint
+          export GITLINT_COMMITS=$REF_BEFORE..$REF_AFTER
+          # run pre-commit
+          EXIT_CODE=0
+          pre-commit run --from-ref $REF_BEFORE --to-ref $REF_AFTER || EXIT_CODE=$?
+          exit $EXIT_CODE
 
   unit-tests:
     name: tests
@@ -86,6 +98,9 @@ jobs:
       - name: Run coverage
         id: coverage
         continue-on-error: true
+        env:
+          REF_BEFORE: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+          REF_AFTER: ${{ github.event_name == 'pull_request' && github.head_ref || github.event.after }}
         run: |
           pwd
           ls -la
@@ -95,7 +110,7 @@ jobs:
           COV_POST=`coverage report --precision=2 | awk '$1 == "TOTAL" {print $NF+0}'`
           COV_BELOW=`echo "$COV_POST" | awk '{print ($1 < ${{ steps.values.outputs.cov_req }})}'`
 
-          git switch -C ${{ github.base_ref }} --track origin/${{ github.base_ref }}
+          git switch -C $REF_BEFORE --track origin/$REF_BEFORE
           pytest --cov
 
           COV_PRE=`coverage report --precision=2 | awk '$1 == "TOTAL" {print $NF+0}'`
