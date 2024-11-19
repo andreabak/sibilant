@@ -44,6 +44,7 @@ jobs:
           # run pre-commit
           EXIT_CODE=0
           pre-commit run --from-ref $REF_BEFORE --to-ref $REF_AFTER || EXIT_CODE=$?
+          pre-commit run --hook-stage manual gitlint-ci || EXIT_CODE=$?
           exit $EXIT_CODE
 
   unit-tests:

@@ -68,9 +68,8 @@ repos:
       - id: python-safety-dependencies-check
         files: requirements.*\.txt
 
-  - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v3.1.0
+  - repo: https://github.com/jorisroovers/gitlint
+    rev: v0.19.1
     hooks:
-      - id: conventional-pre-commit
-        stages: [ commit-msg ]
-        args: [ "ref" ]
+    - id: gitlint
+    - id: gitlint-ci

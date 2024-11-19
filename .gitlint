@@ -1,0 +1,14 @@
+[general]
+ignore=body-max-line-length, body-is-missing, contrib-disallow-cleanup-commits
+contrib=contrib-title-conventional-commits
+ignore-merge-commits=false
+regex-style-search=True
+
+[title-max-length]
+line-length=70
+
+[body-min-length]
+min-length=5
+
+[contrib-title-conventional-commits]
+types = fix,feat,chore,docs,style,refactor,ref,perf,test,revert,ci,build
