@@ -205,6 +205,8 @@ class RTPPacket(ParseableSerializableRaw):
     # data
     payload: bytes = b""
 
+    _duration_override: float | None = None
+
     _format_u64: ClassVar[CompiledFormat] = CompiledFormat("u2b1b1u4b1u7u16u32u32")
     _ext_header_u32: ClassVar[CompiledFormat] = CompiledFormat("u16u16")
 
@@ -221,6 +223,8 @@ class RTPPacket(ParseableSerializableRaw):
     @property
     def duration(self) -> float:
         """Duration of the packet in seconds. Supports only PCMU and PCMA."""
+        if self._duration_override is not None:
+            return self._duration_override
         if self.payload_type in {RTPMediaProfiles.PCMU, RTPMediaProfiles.PCMA}:
             return len(self.payload) / self.payload_type.clock_rate
         raise NotImplementedError

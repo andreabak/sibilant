@@ -59,7 +59,7 @@ class RTPStreamBuffer(RawIOBase):
     SEQUENCE_WRAP_DELTA: int = 2**10
     TIMESTAMP_MAX: int = 2**32
     TIMESTAMP_WRAP_DELTA: int = DEFAULT_SIZE * 2**10
-    DONE_EVENT_DISCARD_DELTA: int = 10
+    DONE_EVENT_DISCARD_TS_DELTA: int = DEFAULT_SIZE * 12
 
     # TODO: maybe rename modes to send/recv instead of r/w?
     #       otherwise, since they're doing completely different things,
@@ -72,7 +72,9 @@ class RTPStreamBuffer(RawIOBase):
         profile: RTPMediaProfiles | None = None,
         initial_sequence: int | None = None,
         initial_timestamp: int | None = None,
+        event_profile: RTPMediaProfiles | None = None,
         event_profiles: Mapping[int, RTPMediaProfiles] | None = None,
+        dtmf_max_duration: float = 0.15,
         dtmf_volume_gain: float = -3.0,
         dtmf_volume_default: float = -10.0,
         max_pending: int = 10,
@@ -114,9 +116,12 @@ class RTPStreamBuffer(RawIOBase):
         self._pending: deque[RTPPacket] = deque()
         self._buf_lock: threading.RLock = threading.RLock()
 
+        self._event_profile: RTPMediaProfiles | None = event_profile
         self._event_profiles: dict[int, RTPMediaProfiles] = dict(event_profiles or ())
-        self._event_packets: dict[int, RTPPacket] = {}
-        self._event_packets_done: dict[int, RTPPacket] = {}
+        self._events_codes_pending: dict[int, DTMFCode] = {}
+        self._events_active: dict[int, DTMFEvent] = {}
+        self._events_done: dict[int, DTMFEvent] = {}
+        self.dtmf_max_duration: float = dtmf_max_duration
         self.dtmf_volume_gain: float = dtmf_volume_gain
         self.dtmf_volume_default: float = dtmf_volume_default
 
@@ -131,6 +136,8 @@ class RTPStreamBuffer(RawIOBase):
         """Lost packets count: out of order ones that are too old to recover."""
         self._ok_count: int = 0
         """Ok packets count: packets succesfully written to the buffer."""
+        self._gen_count: int = 0
+        """Generated packets count: packets created from the buffer."""
 
     @property
     def mode(self) -> str:
@@ -219,9 +226,105 @@ class RTPStreamBuffer(RawIOBase):
             raise ValueError("Can only read audio from a stream with audio profile")
         return self._profile.decode(raw_data)
 
-    def read_packet(
-        self, packet: RTPPacket | Mapping[str, Any], size: int = DEFAULT_SIZE
-    ) -> RTPPacket | None:
+    def _generate_packet(
+        self,
+        defaults: Mapping[str, Any],
+        data: bytes,
+        *,
+        ts_delta: int | None = None,
+        **overrides: Any,
+    ) -> RTPPacket:
+        if ts_delta is None:
+            # FIXME: depends on profile, this hack works for PCMA/PCMU
+            ts_delta = len(data)
+        self.sequence = (self.sequence + 1) % self.SEQUENCE_MAX
+        self.timestamp = (self.timestamp + ts_delta) % self.TIMESTAMP_MAX
+        values = dict(
+            defaults,
+            payload_type=self._profile,
+            ssrc=self.ssrc,
+            sequence=self.sequence,
+            timestamp=self.timestamp,
+            payload=data,
+        )
+        values.update(overrides)
+        packet = RTPPacket(**values)
+        self._gen_count += 1
+        return packet
+
+    def _generate_next_dtmf_packets(
+        self, defaults: Mapping[str, Any], duration_increase: int
+    ) -> list[RTPPacket]:
+        assert (
+            self._event_profile is not None
+        ), "can't generate DTMF without an event profile"
+        assert (
+            self._events_active or self._events_codes_pending
+        ), "no dtmf active or pending"
+
+        packets_to_send = []
+        # get the first active or pending event if multiple
+        timestamp, last_dtmf_or_code = min(
+            {**self._events_active, **self._events_codes_pending}.items()
+        )
+
+        if isinstance(last_dtmf_or_code, DTMFCode):
+            assert timestamp in self._events_codes_pending
+            self._events_codes_pending.pop(timestamp)
+            last_dtmf_code = last_dtmf_or_code
+            last_dtmf = DTMFEvent(
+                event_code=last_dtmf_code,
+                end_of_event=False,
+                volume=int(self.dtmf_volume_default),
+                duration=0,
+            )
+            packets_to_send.append(
+                self._generate_packet(
+                    defaults,
+                    last_dtmf.serialize(),
+                    ts_delta=0,
+                    payload_type=self._event_profile,
+                    timestamp=timestamp,
+                    marker=True,
+                    _duration_override=0.0,
+                )
+            )
+        else:
+            assert isinstance(last_dtmf_or_code, DTMFEvent)
+            last_dtmf = last_dtmf_or_code
+
+        new_duration = last_dtmf.duration + duration_increase
+        new_duration_secs = new_duration / self._event_profile.clock_rate
+        end_of_event = new_duration_secs > self.dtmf_max_duration
+        dtmf = DTMFEvent(
+            event_code=last_dtmf.event_code,
+            end_of_event=end_of_event,
+            volume=last_dtmf.volume,
+            duration=new_duration,
+        )
+
+        if not end_of_event:
+            self._events_active[timestamp] = dtmf
+        else:
+            self._events_active.pop(timestamp, None)
+            self._events_done[timestamp] = dtmf
+            self.timestamp += dtmf.duration
+        packets_to_send.extend(
+            self._generate_packet(
+                defaults,
+                dtmf.serialize(),
+                ts_delta=0,
+                payload_type=self._event_profile,
+                timestamp=timestamp,
+                _duration_override=duration_increase / self._event_profile.clock_rate,
+            )
+            for _ in range(3 if end_of_event else 1)
+        )
+        return packets_to_send
+
+    def read_packets(
+        self, defaults: Mapping[str, Any], size: int = DEFAULT_SIZE
+    ) -> list[RTPPacket]:
         """
         Read up to size bytes from the buffer, and return a packet with the given values.
         N.B. payload, payload_type, ssrc, sequence, and timestamp will be overwritten.
@@ -234,36 +337,17 @@ class RTPStreamBuffer(RawIOBase):
         if self._profile is None:
             raise ValueError("Stream has no profile set, cannot generate packet")
 
-        if not isinstance(packet, (Mapping, RTPPacket)):
-            raise TypeError(f"Expected a mapping or RTPPacket, got {type(packet)}")
-
         with self._buf_lock:
             data = self.read(size)
             if not data:
-                return None
-            time_span: int = len(
-                data
-            )  # FIXME: depends on profile, this hack works for PCMA/PCMU
-            self.sequence = (self.sequence + 1) % self.SEQUENCE_MAX
-            self.timestamp = (self.timestamp + time_span) % self.TIMESTAMP_MAX
+                return []
 
-        if isinstance(packet, Mapping):
-            packet = RTPPacket(
-                **packet,
-                payload_type=self._profile,
-                ssrc=self.ssrc,
-                sequence=self.sequence,
-                timestamp=self.timestamp,
-                payload=data,
-            )
+        self._discard_old_events()
+        if self._events_codes_pending or self._events_active:
+            # audio data will be discarded
+            return self._generate_next_dtmf_packets(defaults, len(data))
         else:
-            assert isinstance(packet, RTPPacket)
-            packet.payload_type = self._profile
-            packet.ssrc = self.ssrc
-            packet.sequence = self.sequence
-            packet.timestamp = self.timestamp
-            packet.payload = data
-        return packet
+            return [self._generate_packet(defaults, data)]
 
     def write(self, data: bytes | Buffer) -> int:
         """Write data to the buffer, and return the number of bytes written."""
@@ -277,19 +361,17 @@ class RTPStreamBuffer(RawIOBase):
         assert isinstance(packet.payload_type.payload_type, int)
         event_profile = self._event_profiles[packet.payload_type.payload_type]
 
+        timestamp = packet.timestamp
         dtmf = DTMFEvent.parse(packet.payload)
 
-        last_packet: RTPPacket | None = self._event_packets.get(
-            packet.timestamp, self._event_packets_done.get(packet.timestamp)
-        )
-        last_dtmf: DTMFEvent | None = (
-            DTMFEvent.parse(last_packet.payload) if last_packet is not None else None
+        last_dtmf: DTMFEvent | None = self._events_active.get(
+            timestamp, self._events_done.get(timestamp)
         )
         if not dtmf.end_of_event:
-            self._event_packets[packet.timestamp] = packet
+            self._events_active[timestamp] = dtmf
         else:
-            self._event_packets.pop(packet.timestamp, None)
-            self._event_packets_done[packet.timestamp] = packet
+            self._events_active.pop(timestamp, None)
+            self._events_done[timestamp] = dtmf
 
         last_dtmf_duration = last_dtmf.duration if last_dtmf is not None else 0
         generate_tone_length: int = dtmf.duration - last_dtmf_duration
@@ -411,27 +493,32 @@ class RTPStreamBuffer(RawIOBase):
     def write_event_packet(self, packet: RTPPacket) -> bool:
         """Write a telephone event packet to the buffer. Return True if it's a newly seen event."""
         assert packet.payload_type.payload_type in self._event_profiles
-        is_new_event = (
-            packet.timestamp not in self._event_packets
-            and packet.timestamp not in self._event_packets_done
+        is_new_event = packet.timestamp not in (
+            self._events_active.keys() | self._events_done.keys()
         )
         self.write_packet(packet)
         return is_new_event
 
+    def generate_dtmf(self, code: DTMFCode) -> None:
+        """Schedule generation of a DTMF tone as next packets on the stream."""
+        if self._mode != "r":
+            raise ValueError("Can only generate DTMF in mode='r'")
+        if self._event_profile is None:
+            raise ValueError("Stream has no event profile set, cannot generate DTMF")
+        self._events_codes_pending[self.timestamp + self.DEFAULT_SIZE] = code
+
     def _discard_old_events(self) -> None:
-        if not self._event_packets and not self._event_packets_done:
+        if not self._events_active and not self._events_done:
             return
         timestamps_to_drop: set[int] = {
-            event_timestamp
-            for event_timestamp, packet in {
-                **self._event_packets,
-                **self._event_packets_done,
-            }.items()
-            if self.sequence - packet.sequence > self.DONE_EVENT_DISCARD_DELTA
+            timestamp
+            for timestamp in self._events_active.keys() | self._events_done.keys()
+            if self.timestamp - timestamp
+            > (self.DONE_EVENT_DISCARD_TS_DELTA + self.dtmf_max_duration)
         }
-        for event_timestamp in timestamps_to_drop:
-            self._event_packets.pop(event_timestamp, None)
-            self._event_packets_done.pop(event_timestamp, None)
+        for timestamp in timestamps_to_drop:
+            self._events_active.pop(timestamp, None)
+            self._events_done.pop(timestamp, None)
 
     # TODO: implement a way to "reset" the stream? Otherwise we could just create a new one
 
@@ -638,7 +725,11 @@ class RTPClient:
         return RTPStreamBuffer(mode="w", event_profiles=self.event_profiles)
 
     def _create_send_stream(self) -> RTPStreamBuffer:
-        return RTPStreamBuffer(mode="r", profile=self._profile)
+        return RTPStreamBuffer(
+            mode="r",
+            event_profile=next(iter(self.event_profiles.values())),
+            profile=self._profile,
+        )
 
     def start(self) -> None:
         """Start the RTP client, creating the socket and threads."""
@@ -782,8 +873,10 @@ class RTPClient:
         while not self._closing_event.is_set():
             pre_send_time_ns: int = self._last_send_time_ns or time.perf_counter_ns()
 
-            packet: RTPPacket | None = self._send_stream.read_packet(packet_data)
-            if packet is not None:
+            packets_max_duration: float = 0.0
+            packet: RTPPacket | None = None
+            packets: list[RTPPacket] = self._send_stream.read_packets(packet_data)
+            for packet in packets:
                 try:
                     self._socket.sendto(packet.serialize(), self._remote_addr)
                 except Exception:
@@ -791,13 +884,15 @@ class RTPClient:
                         f"Error sending RTP packet to {self._remote_addr}"
                     )
                     raise
+                packets_max_duration = max(packets_max_duration, packet.duration)
 
             post_send_time_ns: int = time.perf_counter_ns()
             send_time: float = (post_send_time_ns - pre_send_time_ns) / 1e9
-            if packet is not None:
+            if packet is not None:  # count only the last packet
                 self._send_stats.add(packet, send_time)
-            packet_duration: float = packet.duration if packet else 0.0
-            sleep_time: float = max(0.0, max(1 / 96_000, packet_duration) - send_time)
+            sleep_time: float = max(
+                0.0, max(1 / 96_000, packets_max_duration) - send_time
+            )
             self._last_send_time_ns = post_send_time_ns
             time.sleep(sleep_time * self._send_delay_factor)
 
@@ -905,3 +1000,7 @@ class RTPClient:
         :raises RTPUnsupportedCodec: If the codec is not supported.
         """
         return self._send_stream.write_audio(data)
+
+    def write_dtmf(self, code: DTMFCode) -> None:
+        """Write a DTMF code to the send stream."""
+        self._send_stream.generate_dtmf(code)
