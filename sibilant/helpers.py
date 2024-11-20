@@ -37,11 +37,13 @@ from typing import (
     runtime_checkable,
 )
 
+import numpy as np
 from typing_extensions import Self, TypeAlias, dataclass_transform
 
 
 if TYPE_CHECKING:
     from _typeshed import SupportsKeysAndGetItem
+    from numpy.typing import NDArray
 
 
 _dT = TypeVar("_dT")
@@ -701,3 +703,26 @@ def get_external_ip_for_dest(host: str) -> str:
         return get_local_ip_for_dest(host_ip)
     else:
         return get_public_ip()
+
+
+@overload
+def db_to_amplitude(db: float, *, ref: float = 1.0) -> float: ...
+
+
+@overload
+def db_to_amplitude(
+    db: NDArray[np.float32], *, ref: float = 1.0
+) -> NDArray[np.float32]: ...
+
+
+@overload
+def db_to_amplitude(
+    db: float | NDArray[np.float32], *, ref: float = 1.0
+) -> float | NDArray[np.float32]: ...
+
+
+def db_to_amplitude(
+    db: float | NDArray[np.float32], *, ref: float = 1.0
+) -> float | NDArray[np.float32]:
+    """Convert dB-scaled values to amplitude."""
+    return ((ref**2) * np.power(10.0, db * 0.1)) ** 0.5

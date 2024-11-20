@@ -86,10 +86,14 @@ class VoIPCall(sip.CallHandler):  # noqa: PLR0904
         remote_addr: tuple[str, int] | None = None
         if self._sip_call.received_sdp is not None:
             remote_addr = self._sip_call.received_sdp.connection_address
+        dtmf_callback: Callable[[rtp.DTMFCode], None] | None = None
+        if self._phone.on_dtmf_event:
+            dtmf_callback = partial(self._phone.on_dtmf_event, self)
         self._rtp_client = rtp.RTPClient(
             local_addr=(self._phone.sip_client.local_host, 0),
             remote_addr=remote_addr,
             media_formats=SUPPORTED_MEDIA_FORMATS,
+            dtmf_events_callback=dtmf_callback,
         )
 
         self._start_time: float | None = None
@@ -282,6 +286,14 @@ class VoIPCall(sip.CallHandler):  # noqa: PLR0904
             raise VoIPCallException("Cannot write audio, RTP client closed")
         return self._rtp_client.write_audio(data)
 
+    def send_dtmf(self, code: rtp.DTMFCode) -> None:
+        """Send a DTMF code to the outgoing RTP stream."""
+        if self.state != sip.CallState.ESTABLISHED:
+            raise VoIPCallException(f"Cannot send DTMF in call state: {self.state}")
+        if self._rtp_client.closed:
+            raise VoIPCallException("Cannot send DTMF, RTP client closed")
+        self._rtp_client.write_dtmf(code)
+
     # TODO: do we have too many startup/shutdown methods? Maybe just one each?
     def terminate_call(self, call: sip.SIPCall) -> None:  # noqa: D102
         if callable(self._phone.on_call_terminated):
@@ -310,6 +322,7 @@ IncomingCallCallback = Callable[[VoIPCall], bool]
 EstablishedCallCallback = Callable[[VoIPCall], None]
 TerminatedCallCallback = Callable[[VoIPCall], None]
 CallFailureCallback = Callable[[VoIPCall, Exception], Union[bool, None]]
+DTMFEventCallback = Callable[[VoIPCall, rtp.DTMFCode], None]
 
 
 class VoIPPhone:
@@ -365,6 +378,7 @@ class VoIPPhone:
         on_call_established: EstablishedCallCallback | None = None,
         on_call_terminated: TerminatedCallCallback | None = None,
         on_call_failure: CallFailureCallback | None = None,
+        on_dtmf_event: DTMFEventCallback | None = None,
         sip_kwargs: Mapping[str, Any] | None = None,
         rtp_kwargs: Mapping[str, Any] | None = None,
     ):
@@ -387,6 +401,7 @@ class VoIPPhone:
         self.on_call_established: EstablishedCallCallback | None = on_call_established
         self.on_call_terminated: TerminatedCallCallback | None = on_call_terminated
         self.on_call_failure: CallFailureCallback | None = on_call_failure
+        self.on_dtmf_event: DTMFEventCallback | None = on_dtmf_event
 
         self._calls: dict[str, VoIPCall] = {}
         """Mapping of currently active calls, by call ID."""
