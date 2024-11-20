@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, ClassVar, Mapping, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Mapping, cast
 
 import numpy as np
 from cbitstruct import CompiledFormat
-from typing_extensions import Self
+from typing_extensions import Self, TypeAlias
 
 from sibilant.helpers import ParseableSerializableRaw, slots_dataclass
 
@@ -21,6 +21,7 @@ __all__ = [
     "DTMF_TABLE",
     "DTMFCode",
     "DTMFEvent",
+    "DTMFStrCode",
     "generate_dtmf",
     "tone",
 ]
@@ -72,6 +73,11 @@ def tone(
     return y
 
 
+DTMFStrCode: TypeAlias = Literal[
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "#", "A", "B", "C", "D"
+]
+
+
 class DTMFCode(enum.IntEnum):
     """The DTMF event codes as defined in :rfc:`4733#section-3.2`."""
 
@@ -93,6 +99,25 @@ class DTMFCode(enum.IntEnum):
     B = 13
     C = 14
     D = 15
+
+    @classmethod
+    def from_char(cls, char: DTMFStrCode) -> DTMFCode:
+        """Resolve a DTMF code from its string character representation."""
+        if len(char) == 1:
+            if char == "*":
+                return cls.STAR
+            elif char == "#":
+                return cls.POUND
+            elif char in {"A", "B", "C", "D"}:
+                return cast(DTMFCode, getattr(cls, char))
+            else:
+                try:
+                    int(char)
+                except ValueError:
+                    pass
+                else:
+                    return cast(DTMFCode, getattr(cls, f"DIGIT_{char}"))
+        raise ValueError(f"Invalid DTMF code string character: {char}")
 
 
 # fmt: off
