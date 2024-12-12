@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import functools
 import ipaddress
+import logging
 import re
 import socket
 import sys
@@ -40,10 +41,15 @@ from typing import (
 import numpy as np
 from typing_extensions import Self, TypeAlias, dataclass_transform
 
+from .constants import PUBLIC_IP_RESOLVERS
+
 
 if TYPE_CHECKING:
     from _typeshed import SupportsKeysAndGetItem
     from numpy.typing import NDArray
+
+
+_logger = logging.getLogger(__name__)
 
 
 _dT = TypeVar("_dT")
@@ -684,7 +690,24 @@ def time_cache(
 @time_cache(expiry=60.0)
 def get_public_ip() -> str:
     """Get the public IP address of the current machine."""
-    return cast(str, urllib.request.urlopen("https://ident.me").read().decode("utf8"))
+
+    def try_resolver(
+        url: str, extract_fn: Callable[[str], str | None] | None = None
+    ) -> str:
+        body = urllib.request.urlopen(url).read().decode("utf8")  # noqa: S310
+        if extract_fn:
+            body = extract_fn(body)
+        if not body:
+            raise ValueError(f"Could not extract public IP address from {url} response")
+        ip = ipaddress.ip_address(body.strip())
+        return str(ip)
+
+    for url, extract_fn in PUBLIC_IP_RESOLVERS:
+        try:
+            return try_resolver(url, extract_fn)
+        except Exception as e:  # noqa: BLE001, PERF203
+            _logger.warning(f"Failed to get public IP address from: {url!r}: {e}")
+    raise RuntimeError("Could not resolve public IP address")
 
 
 def get_local_ip_for_dest(host: str) -> str:
