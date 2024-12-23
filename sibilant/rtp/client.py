@@ -918,7 +918,7 @@ class RTPClient:
         self, size: int = RTPStreamBuffer.DEFAULT_SIZE
     ) -> NDArray[np.float32]:
         """If there are multiple active recv streams we need to mix them together."""
-        mix_buf: NDArray[np.float32] = np.ndarray([], dtype=np.float32)
+        mix_buf: NDArray[np.float32] = np.ndarray((0,), dtype=np.float32)
 
         if not self._recv_streams:
             return mix_buf
