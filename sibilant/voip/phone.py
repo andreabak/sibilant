@@ -60,7 +60,7 @@ class CallDirection(enum.Enum):
     OUTGOING = "outgoing"
 
 
-class VoIPCall(sip.CallHandler):  # noqa: PLR0904
+class VoIPCall(sip.CallHandler):
     """
     VoIP call handler.
 
@@ -251,6 +251,12 @@ class VoIPCall(sip.CallHandler):  # noqa: PLR0904
         if callable(self._phone.on_call_established):
             self._phone.on_call_established(self)
 
+    def _assert_has_audio(self) -> None:
+        if self.state != sip.CallState.ESTABLISHED:
+            raise VoIPCallException(f"Cannot read audio in call state: {self.state}")
+        if self._rtp_client.closed:  # TODO: how about pending data? Lift restriction?
+            raise VoIPCallException("Cannot read audio, RTP client closed")
+
     def read_audio(
         self, size: int = rtp.RTPStreamBuffer.DEFAULT_SIZE
     ) -> NDArray[np.float32]:
@@ -264,11 +270,24 @@ class VoIPCall(sip.CallHandler):  # noqa: PLR0904
         :param size: the number of samples to read. If not specified, will read
             the default size of the stream buffer.
         """
-        if self.state != sip.CallState.ESTABLISHED:
-            raise VoIPCallException(f"Cannot read audio in call state: {self.state}")
-        if self._rtp_client.closed:  # TODO: how about pending data? Lift restriction?
-            raise VoIPCallException("Cannot read audio, RTP client closed")
+        self._assert_has_audio()
         return self._rtp_client.read_audio(size)
+
+    def read_timed_audio(
+        self, size: int = rtp.RTPStreamBuffer.DEFAULT_SIZE
+    ) -> rtp.TimedAudioChunk | None:
+        """
+        Read incoming timed audio data from the call, decoded with the appropriate codec,
+        as a float32 numpy array in the range [-1, 1], along with its end timestamp.
+
+        The rate is unchanged, so the same as the stream profile.
+        If no data is available, will return None.
+
+        :param size: the number of samples to read. If not specified, will read
+            the default size of the stream buffer.
+        """
+        self._assert_has_audio()
+        return self._rtp_client.read_timed_audio(size)
 
     def write_audio(self, data: NDArray[np.float32]) -> int:
         """
@@ -280,11 +299,21 @@ class VoIPCall(sip.CallHandler):  # noqa: PLR0904
 
         :param data: The data to write.
         """
-        if self.state != sip.CallState.ESTABLISHED:
-            raise VoIPCallException(f"Cannot write audio in call state: {self.state}")
-        if self._rtp_client.closed:
-            raise VoIPCallException("Cannot write audio, RTP client closed")
+        self._assert_has_audio()
         return self._rtp_client.write_audio(data)
+
+    def write_timed_audio(self, data: NDArray[np.float32], timestamp: int) -> int:
+        """
+        Write timed audio data to the outgoing RTP stream, encoded with the appropriate codec,
+        given a float32 numpy array in the range [-1, 1], and its end timestamp.
+
+        The rate is fed unchanged, so it must match the stream's profile.
+        Returns the number of bytes written.
+
+        :param data: The data to write.
+        """
+        self._assert_has_audio()
+        return self._rtp_client.write_timed_audio(data, timestamp)
 
     def send_dtmf(self, code: rtp.DTMFCode) -> None:
         """Send a DTMF code to the outgoing RTP stream."""

@@ -8,7 +8,7 @@ description = "sibilant makes python communicate over VoIP"
 authors = [
     {name = "abk16", email = "awaken.mulled505@4wrd.cc"}
 ]
-version = "0.3.2"
+version = "0.3.3"
 requires-python = ">=3.8"
 license = {text = "MPL-2.0"}
 readme = "README.md"
@@ -54,7 +54,7 @@ max-args = 10
 max-bool-expr = 8
 max-branches = 20
 max-returns = 8
-max-public-methods = 25
+max-public-methods = 30
 max-statements = 70
 allow-dunder-method-names = ["__registry_new_for__", "__registry_get_class_for__"]
 

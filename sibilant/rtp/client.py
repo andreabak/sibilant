@@ -12,7 +12,15 @@ import time
 from collections import deque
 from io import RawIOBase
 from types import MappingProxyType, TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Collection, Literal, Mapping
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Collection,
+    Literal,
+    Mapping,
+    NamedTuple,
+)
 
 import numpy as np
 from typing_extensions import Buffer, Self
@@ -42,6 +50,30 @@ if TYPE_CHECKING:
 
 
 _logger = logging.getLogger(__name__)
+
+
+class TimedBufferChunk(NamedTuple):
+    """
+    A chunk of raw bytes data, with a timestamp representing its end time.
+
+    N.B. the timestamp has no particular reference, and is meaningful only if used
+    in a specific context (e.g. RTP stream).
+    """
+
+    data: bytes
+    timestamp: int
+
+
+class TimedAudioChunk(NamedTuple):
+    """
+    A chunk of audio frames, with a timestamp representing its end time.
+
+    N.B. the timestamp has no particular reference, and is meaningful only if used
+    in a specific context (e.g. RTP stream).
+    """
+
+    data: NDArray[np.float32]
+    timestamp: int
 
 
 class RTPStreamBuffer(RawIOBase):
@@ -112,13 +144,16 @@ class RTPStreamBuffer(RawIOBase):
         self._profile: RTPMediaProfiles | None = profile
         self.sequence: int = initial_sequence
         self.timestamp: int = initial_timestamp
-        self._buffer: deque[bytes] = deque()
+        self._timed_buffer: deque[TimedBufferChunk] = deque()
+        self._last_read_timestamp: int | None = None
+        self._last_write_timestamp: int | None = None
         self._pending: deque[RTPPacket] = deque()
         self._buf_lock: threading.RLock = threading.RLock()
 
         self._event_profile: RTPMediaProfiles | None = event_profile
         self._event_profiles: dict[int, RTPMediaProfiles] = dict(event_profiles or ())
         self._events_codes_pending: dict[int, DTMFCode] = {}
+        self._events_start_timestamp: dict[int, int] = {}
         self._events_active: dict[int, DTMFEvent] = {}
         self._events_done: dict[int, DTMFEvent] = {}
         self.dtmf_max_duration: float = dtmf_max_duration
@@ -187,25 +222,80 @@ class RTPStreamBuffer(RawIOBase):
     @property
     def buffer_len(self) -> int:
         """The current length of the buffer."""
-        return sum(len(b) for b in self._buffer)
+        return sum(len(i.data) for i in self._timed_buffer)
 
-    def read(self, size: int = DEFAULT_SIZE) -> bytes:
-        """Read up to size bytes from the buffer, if size is -1, read all available bytes."""
+    def read_timed(self, size: int = DEFAULT_SIZE) -> TimedBufferChunk | None:
+        """
+        Read up to ``size`` contiguous timed chunks from the buffer,
+        if size is -1, read all available contiguous chunks.
+
+        Will not return chunks that are not time-contiguous.
+        """
         with self._buf_lock:
             size = self.buffer_len if size == -1 else min(size, self.buffer_len)
 
             data = b""
             while size > 0:
-                buf = self._buffer.popleft()
-                if len(buf) <= size:
-                    data += buf
-                    size -= len(buf)
+                item = self._timed_buffer.popleft()
+                chunk_size = len(item.data)
+                # FIXME: hack that works for PCMU/PCMA, as timestamp unit == 1 sample == 1 byte
+                is_contiguous = self._last_read_timestamp is None or (
+                    self._last_read_timestamp + chunk_size == item.timestamp
+                )
+                if data and not is_contiguous:  # break on non-contiguous chunk
+                    self._timed_buffer.appendleft(item)
+                    break
+                if chunk_size <= size:
+                    data += item.data
+                    self._last_read_timestamp = item.timestamp
+                    size -= chunk_size
                 else:
-                    data += buf[:size]
-                    self._buffer.appendleft(buf[size:])
+                    data += item.data[:size]
+                    # FIXME: PCMU/PCMA timestamp hack
+                    self._last_read_timestamp = item.timestamp - size
+                    self._timed_buffer.appendleft(
+                        TimedBufferChunk(
+                            data=item.data[size:], timestamp=item.timestamp
+                        )
+                    )
                     size = 0
 
-        return data
+            if not data:
+                return None
+            else:
+                assert self._last_read_timestamp is not None
+                return TimedBufferChunk(data=data, timestamp=self._last_read_timestamp)
+
+    def read_timed_audio(self, size: int = DEFAULT_SIZE) -> TimedAudioChunk | None:
+        """
+        Read timed contiguous audio data from the buffer,
+        decoded with the appropriate codec,
+        into a chunk wiht float32 numpy array in the range [-1, 1] with its end timestamp.
+        The rate is unchanged, so the same as the stream's profile.
+        If no data is available, will return None.
+
+        :param size: The maximum number of bytes to read.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        chunk = self.read_timed(size)
+        if not chunk:
+            return None
+        if self._profile is None:
+            raise ValueError("Stream has no profile set, cannot decode audio")
+        if self._profile.media_type != RTPMediaType.AUDIO:
+            raise ValueError("Can only read audio from a stream with audio profile")
+        decoded = self._profile.decode(chunk.data)
+        return TimedAudioChunk(data=decoded, timestamp=chunk.timestamp)
+
+    def read(self, size: int = DEFAULT_SIZE) -> bytes:
+        """
+        Read up to ``size`` contiguous bytes from the buffer,
+        if size is -1, read all available contiguous bytes.
+
+        Will not return data that's not time-contiguous.
+        """
+        chunk = self.read_timed(size)
+        return chunk.data if chunk else b""
 
     def read_audio(self, size: int = DEFAULT_SIZE) -> NDArray[np.float32]:
         """
@@ -217,28 +307,33 @@ class RTPStreamBuffer(RawIOBase):
         :param size: The maximum number of bytes to read.
         :raises RTPUnsupportedCodec: If the codec is not supported.
         """
-        raw_data: bytes = self.read(size)
-        if not raw_data:
+        timed_audio = self.read_timed_audio(size)
+        if not timed_audio:
             return np.zeros(0, dtype=np.float32)
         if self._profile is None:
             raise ValueError("Stream has no profile set, cannot decode audio")
         if self._profile.media_type != RTPMediaType.AUDIO:
             raise ValueError("Can only read audio from a stream with audio profile")
-        return self._profile.decode(raw_data)
+        return timed_audio.data
 
     def _generate_packet(
         self,
         defaults: Mapping[str, Any],
         data: bytes,
         *,
+        timestamp: int | None = None,
         ts_delta: int | None = None,
         **overrides: Any,
     ) -> RTPPacket:
         if ts_delta is None:
             # FIXME: depends on profile, this hack works for PCMA/PCMU
             ts_delta = len(data)
+        if timestamp and ts_delta:
+            raise RuntimeError("Cannot specify both timestamp and ts_delta")
+        if timestamp is None:
+            timestamp = self.timestamp
         self.sequence = (self.sequence + 1) % self.SEQUENCE_MAX
-        self.timestamp = (self.timestamp + ts_delta) % self.TIMESTAMP_MAX
+        self.timestamp = (timestamp + ts_delta) % self.TIMESTAMP_MAX
         values = dict(
             defaults,
             payload_type=self._profile,
@@ -282,9 +377,9 @@ class RTPStreamBuffer(RawIOBase):
                 self._generate_packet(
                     defaults,
                     last_dtmf.serialize(),
+                    timestamp=timestamp,
                     ts_delta=0,
                     payload_type=self._event_profile,
-                    timestamp=timestamp,
                     marker=True,
                     _duration_override=0.0,
                 )
@@ -313,9 +408,9 @@ class RTPStreamBuffer(RawIOBase):
             self._generate_packet(
                 defaults,
                 dtmf.serialize(),
+                timestamp=timestamp,
                 ts_delta=0,
                 payload_type=self._event_profile,
-                timestamp=timestamp,
                 _duration_override=duration_increase / self._event_profile.clock_rate,
             )
             for _ in range(3 if end_of_event else 1)
@@ -338,24 +433,58 @@ class RTPStreamBuffer(RawIOBase):
             raise ValueError("Stream has no profile set, cannot generate packet")
 
         with self._buf_lock:
-            data = self.read(size)
-            if not data:
+            chunk = self.read_timed(size)
+            if not chunk:
                 return []
 
         self._discard_old_events()
         if self._events_codes_pending or self._events_active:
             # audio data will be discarded
-            return self._generate_next_dtmf_packets(defaults, len(data))
+            return self._generate_next_dtmf_packets(defaults, len(chunk.data))
         else:
-            return [self._generate_packet(defaults, data)]
+            return [
+                self._generate_packet(
+                    defaults, chunk.data, timestamp=chunk.timestamp, ts_delta=0
+                )
+            ]
 
-    def write(self, data: bytes | Buffer) -> int:
-        """Write data to the buffer, and return the number of bytes written."""
+    def write_timed(self, data: bytes | Buffer, timestamp: int) -> int:
+        """
+        Write timed data to the buffer, and return the number of bytes written.
+
+        The timestamp value must represent the time at the end of the data.
+        """
         if isinstance(data, Buffer):
             data = bytes(data)
         with self._buf_lock:
-            self._buffer.append(data)
+            self._timed_buffer.append(TimedBufferChunk(data=data, timestamp=timestamp))
+            self._last_write_timestamp = timestamp
         return len(data)
+
+    def write_timed_audio(self, data: NDArray[np.float32], timestamp: int) -> int:
+        """
+        Write timed audio data to the buffer, encoded with the appropriate codec,
+        given a float32 numpy array in the range [-1, 1].
+        The rate is fed unchanged, so it must match the stream's profile.
+        Returns the number of bytes written.
+
+        :param data: The data to write.
+        :param timestamp: The end timestamp of the data to write.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        if self._profile is None:
+            raise ValueError("Stream has no profile set, cannot encode audio")
+        if self._profile.media_type != RTPMediaType.AUDIO:
+            raise ValueError("Can only write audio to a stream with audio profile")
+        return self.write_timed(self._profile.encode(data), timestamp)
+
+    def write(self, data: bytes | Buffer) -> int:
+        """Write data to the buffer, and return the number of bytes written."""
+        # FIXME: depends on profile, this hack works for PCMA/PCMU
+        if isinstance(data, Buffer):
+            data = bytes(data)
+        timestamp = (self._last_write_timestamp or self.timestamp) + len(data)
+        return self.write_timed(data, timestamp)
 
     def _write_event(self, packet: RTPPacket) -> int:
         assert isinstance(packet.payload_type.payload_type, int)
@@ -372,7 +501,12 @@ class RTPStreamBuffer(RawIOBase):
         else:
             self._events_active.pop(timestamp, None)
             self._events_done[timestamp] = dtmf
+        if last_dtmf is None:
+            # the time of the first dtmf packet will be the end of the first packet duration
+            self._events_start_timestamp[timestamp] = packet.timestamp - dtmf.duration
 
+        assert timestamp in self._events_start_timestamp
+        start_timestamp = self._events_start_timestamp[timestamp]
         last_dtmf_duration = last_dtmf.duration if last_dtmf is not None else 0
         generate_tone_length: int = dtmf.duration - last_dtmf_duration
         if generate_tone_length > 0:
@@ -388,7 +522,10 @@ class RTPStreamBuffer(RawIOBase):
             )
             if self._profile is None:
                 raise ValueError("Stream has no profile set, cannot encode audio")
-            return self.write(self._profile.encode(tone_audio))
+            return self.write_timed(
+                self._profile.encode(tone_audio),
+                timestamp=start_timestamp + dtmf.duration,
+            )
         return 0
 
     def write_audio(self, data: NDArray[np.float32]) -> int:
@@ -460,7 +597,9 @@ class RTPStreamBuffer(RawIOBase):
                     if new_packet_is_event:
                         written += self._write_event(new_packet)
                     else:
-                        written += self.write(new_packet.payload)
+                        written += self.write_timed(
+                            new_packet.payload, new_packet.timestamp
+                        )
                     self.sequence = new_packet.sequence
                     self.timestamp = new_packet.timestamp
                     self._fill_size = len(new_packet.payload)
@@ -475,7 +614,11 @@ class RTPStreamBuffer(RawIOBase):
                 elif len(self._pending) > self._max_pending:
                     # if the next packed is close enough in the future, fill missing data
                     if next_packet.sequence - self.sequence < self._max_pending:
-                        written += self.write(self._lost_filler * self._fill_size)
+                        # FIXME: depends on profile, this hack works for PCMA/PCMU
+                        written += self.write_timed(
+                            self._lost_filler * self._fill_size,
+                            self.timestamp + self._fill_size,
+                        )
                         self.sequence += 1  # let the loop figure this out
                         self._lost_count += 1
                     # otherwise, we have lost too many packets, raise an error
@@ -519,6 +662,7 @@ class RTPStreamBuffer(RawIOBase):
         for timestamp in timestamps_to_drop:
             self._events_active.pop(timestamp, None)
             self._events_done.pop(timestamp, None)
+            self._events_start_timestamp.pop(timestamp, None)
 
     # TODO: implement a way to "reset" the stream? Otherwise we could just create a new one
 
@@ -896,6 +1040,51 @@ class RTPClient:
             self._last_send_time_ns = post_send_time_ns
             time.sleep(sleep_time * self._send_delay_factor)
 
+    def _get_read_stream(self) -> RTPStreamBuffer | None:
+        if not self._recv_streams:
+            return None
+        if len(self._recv_streams) > 1:
+            # FIXME: handle multiplexed streams
+            raise NotImplementedError(
+                "Reading a single stream from multiple streams is not supported"
+            )
+        return next(iter(self._recv_streams.values()))
+
+    def read_timed(
+        self, size: int = RTPStreamBuffer.DEFAULT_SIZE
+    ) -> TimedBufferChunk | None:
+        """
+        Read contiguous timed raw (encoded) data chunks from the incoming RTP stream.
+        If no data is available, will return None.
+
+        :param size: The maximum number of bytes to read.
+        """
+        stream = self._get_read_stream()
+        return stream.read_timed(size) if stream is not None else None
+
+    def read_timed_audio(
+        self, size: int = RTPStreamBuffer.DEFAULT_SIZE
+    ) -> TimedAudioChunk | None:
+        """
+        Read contiguous audio data from the incoming RTP stream,
+        decoded with the appropriate codec,
+        into a chunk wiht float32 numpy array in the range [-1, 1] with its end timestamp.
+        The rate is unchanged, so the same as the stream profile.
+        If no data is available, will return an empty numpy array.
+
+        :param size: The maximum number of bytes to read.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        if not self._recv_streams:
+            return None
+        elif len(self._recv_streams) == 1:
+            stream = self._get_read_stream()
+            return stream.read_timed_audio(size) if stream is not None else None
+        else:
+            raise NotImplementedError(
+                "Reading timed audio from multiple incoming streams is not yet implemented."
+            )
+
     def read(self, size: int = RTPStreamBuffer.DEFAULT_SIZE) -> bytes:
         """
         Read raw (encoded) data from the incoming RTP stream.
@@ -903,16 +1092,8 @@ class RTPClient:
 
         :param size: The maximum number of bytes to read.
         """
-        if not self._recv_streams:
-            return b""
-        if len(self._recv_streams) > 1:
-            # FIXME: handle multiplexed streams
-            raise NotImplementedError(
-                "Reading a single stream from multiple streams is not supported"
-            )
-
-        stream = next(iter(self._recv_streams.values()))
-        return stream.read(size)
+        stream = self._get_read_stream()
+        return stream.read(size) if stream is not None else b""
 
     def _mix_recv_audio_streams(
         self, size: int = RTPStreamBuffer.DEFAULT_SIZE
@@ -923,9 +1104,10 @@ class RTPClient:
         if not self._recv_streams:
             return mix_buf
         elif len(self._recv_streams) == 1:
-            stream = next(iter(self._recv_streams.values()))
-            return stream.read_audio(size)
+            stream = self._get_read_stream()
+            return stream.read_audio(size) if stream is not None else mix_buf
 
+        # FIXME: rewrite the following code, it should be using timestamps
         # FIXME: assumes PCMA/PCMU streams, 160 bytes, 20ms packets
         min_offset: int = RTPStreamBuffer.SEQUENCE_MAX * 160
         max_offset: int = 0
@@ -979,6 +1161,29 @@ class RTPClient:
         if self.dtmf_events_callback is not None:
             dtmf = DTMFEvent.parse(packet.payload)
             self.dtmf_events_callback(dtmf.event_code)
+
+    def write_timed(self, data: bytes, timestamp: int) -> int:
+        """
+        Write timed raw (encoded) data to the outgoing RTP stream.
+        Returns the number of bytes written.
+
+        :param data: The encoded data to write.
+        :param timestamp: The time at the end of the data.
+        """
+        return self._send_stream.write_timed(data, timestamp)
+
+    def write_timed_audio(self, data: NDArray[np.float32], timestamp: int) -> int:
+        """
+        Write timed audio data to the outgoing RTP stream, encoded with the appropriate codec,
+        given a float32 numpy array in the range [-1, 1].
+        The rate is fed unchanged, so it must match the stream's profile.
+        Returns the number of bytes written.
+
+        :param data: The data to write.
+        :param timestamp: The time at the end of the data.
+        :raises RTPUnsupportedCodec: If the codec is not supported.
+        """
+        return self._send_stream.write_timed_audio(data, timestamp)
 
     def write(self, data: bytes) -> int:
         """
