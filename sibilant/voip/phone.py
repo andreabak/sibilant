@@ -78,8 +78,8 @@ class VoIPCall(sip.CallHandler):
         sip_call: sip.SIPCall,
         media_flow: rtp.MediaFlowType = rtp.MediaFlowType.SENDRECV,
     ) -> None:
-        self._phone = phone
-        self._sip_call = sip_call
+        self._phone: VoIPPhone = phone
+        self._sip_call: sip.SIPCall = sip_call
 
         self._media_flow: rtp.MediaFlowType = media_flow
 
@@ -98,6 +98,11 @@ class VoIPCall(sip.CallHandler):
 
         self._start_time: float | None = None
         self._end_time: float | None = None
+
+    @property
+    def sip_call(self) -> sip.SIPCall:
+        """The SIP call object."""
+        return self._sip_call
 
     @property
     def call_id(self) -> str:

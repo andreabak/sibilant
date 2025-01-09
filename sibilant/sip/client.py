@@ -790,6 +790,8 @@ class SIPCall(SIPDialog):
         self._state: CallState = CallState.INIT
         self._received_sdp: sdp.SDPSession | None = None
         self._sent_sdp: sdp.SDPSession | None = None
+        self._initial_invite_request: SIPRequest | None = None
+        self._establish_ok_response: SIPResponse | None = None
         self._failure_exception: Exception | None = None
         self._cancel_event: asyncio.Event = asyncio.Event()
 
@@ -830,6 +832,16 @@ class SIPCall(SIPDialog):
     def sent_sdp(self) -> sdp.SDPSession | None:
         """The SDP session sent by the client during the invite transaction."""
         return self._sent_sdp
+
+    @property
+    def initial_invite_request(self) -> SIPRequest | None:
+        """The invite request sent or received that initiated the call."""
+        return self._initial_invite_request
+
+    @property
+    def establish_ok_response(self) -> SIPResponse | None:
+        """The ok response received or sent that established the call."""
+        return self._establish_ok_response
 
     @property
     def failure_exception(self) -> Exception | None:
@@ -924,6 +936,7 @@ class SIPCall(SIPDialog):
 
         self._process_received_message(invite)
 
+        self._initial_invite_request = invite
         self._state = CallState.INVITE
 
         if not self._handler.can_accept_calls:
@@ -980,7 +993,10 @@ class SIPCall(SIPDialog):
             rtp_profiles_by_port = self._handler.get_rtp_profiles_by_port()
             media_flow: rtp.MediaFlowType = self._handler.get_media_flow()
 
-            await self._reply_answer(invite, rtp_profiles_by_port, media_flow)
+            ok_response = await self._reply_answer(
+                invite, rtp_profiles_by_port, media_flow
+            )
+            self._establish_ok_response = ok_response
 
             try:
                 request = await self._wait_for_message()
@@ -1033,6 +1049,7 @@ class SIPCall(SIPDialog):
 
         response: SIPMessage
         invite, response = await self._might_authenticate(sender)
+        self._initial_invite_request = invite
         self._state = CallState.INVITE
         self._recv_queue.put_nowait(response)
 
@@ -1090,6 +1107,8 @@ class SIPCall(SIPDialog):
                     # if ok_contact_uri != self._uri:
                     #     self._uri = ok_contact_uri
                     ack_uri = ok_contact_uri
+
+                self._establish_ok_response = response
 
                 await self._send_ack(invite, last_recv_msg=response, uri=ack_uri)
 

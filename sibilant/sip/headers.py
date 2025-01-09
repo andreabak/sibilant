@@ -67,6 +67,8 @@ __all__ = [
     "WWWAuthenticateHeader",
     "ProxyAuthorizationHeader",
     "ProxyAuthenticateHeader",
+    "PAssertedIdentityHeader",
+    "PPreferredIdentityHeader",
     "Headers",
 ]
 
@@ -637,6 +639,38 @@ class ProxyAuthenticateHeader(WWWAuthenticateHeader):
     """Proxy-Authenticate header, as described in :rfc:`3261#section-20.27`."""
 
     _name = "Proxy-Authenticate"
+
+
+@slots_dataclass
+class PAssertedIdentityHeader(MultipleValuesHeader[SIPAddress]):
+    """P-Asserted-Identity header, as described in :rfc:`3325#section-9.1`."""
+
+    _name = "P-Asserted-Identity"
+    _values_type = SIPAddress
+
+    def __post_init__(self) -> None:
+        if not self.values:
+            raise SIPParseError(
+                f"{self._name} header if present must have at least one entry"
+            )
+        if len(self.values) > 2:
+            raise SIPParseError(f"{self._name} header can have only up to two entries")
+
+
+@slots_dataclass
+class PPreferredIdentityHeader(MultipleValuesHeader[SIPAddress]):
+    """P-Preferred-Identity header, as described in :rfc:`3325#section-9.2`."""
+
+    _name = "P-Preferred-Identity"
+    _values_type = SIPAddress
+
+    def __post_init__(self) -> None:
+        if not self.values:
+            raise SIPParseError(
+                f"{self._name} header if present must have at least one entry"
+            )
+        if len(self.values) > 2:
+            raise SIPParseError(f"{self._name} header can have only up to two entries")
 
 
 class Headers(CaseInsensitiveDict[_H]):
