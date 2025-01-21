@@ -694,7 +694,7 @@ def get_public_ip() -> str:
     def try_resolver(
         url: str, extract_fn: Callable[[str], str | None] | None = None
     ) -> str:
-        body = urllib.request.urlopen(url).read().decode("utf8")  # noqa: S310
+        body = urllib.request.urlopen(url, timeout=10).read().decode("utf8")  # noqa: S310
         if extract_fn:
             body = extract_fn(body)
         if not body:
