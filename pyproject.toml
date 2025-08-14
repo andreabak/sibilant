@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-requirements-txt"]
+build-backend = "hatchling.build"
 
 [project]
 name = "sibilant"
@@ -9,23 +9,45 @@ authors = [
     {name = "abk16", email = "awaken.mulled505@4wrd.cc"}
 ]
 version = "0.3.5"
-requires-python = ">=3.8"
+requires-python = ">=3.8,<3.13"
 license = {text = "MPL-2.0"}
+license-files = {paths = ["LICENSE"]}
 readme = "README.md"
-dynamic = ["dependencies"]
+dynamic = ["dependencies", "optional-dependencies"]
 
 [project.urls]
 "Homepage" = "https://github.com/andreabak/sibilant"
 
-[tool.setuptools]
+[tool.hatch.metadata]
+packages = ["sibilant*"]
 license-files = ["LICENSE"]
 include-package-data = true
 
-[tool.setuptools.packages.find]
-include = ["sibilant*"]
+[tool.hatch.metadata.hooks.requirements_txt]
+files = ["requirements.txt"]
 
-[tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+[tool.hatch.metadata.hooks.requirements_txt.optional-dependencies]
+dev = ["requirements-dev.txt"]
+
+[tool.hatch.build]
+include = [
+    "sibilant",
+    "tests",
+    "/requirements*.txt",
+]
+
+[tool.hatch.envs.default]
+python = "3.12"
+installer = "uv"
+
+[tool.hatch.envs.dev]
+features = ["dev"]
+
+[tool.hatch.envs.hatch-test]
+template = "dev"
+
+[[tool.hatch.envs.hatch-test.matrix]]
+python = ["3.8", "3.9", "3.10", "3.11", "3.12"]
 
 [tool.ruff]
 fix = true
