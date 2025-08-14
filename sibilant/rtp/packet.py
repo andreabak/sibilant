@@ -5,8 +5,13 @@ from __future__ import annotations
 import enum
 import time
 from contextlib import contextmanager
-from dataclasses import field as dataclass_field, replace as dataclass_replace
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Iterator, cast
+from dataclasses import (
+    field as dataclass_field,
+    fields as dataclass_fields,
+    replace as dataclass_replace,
+)
+from functools import cached_property, lru_cache
+from typing import TYPE_CHECKING, Any, ClassVar, Iterator, cast
 
 from cbitstruct import CompiledFormat
 from typing_extensions import Self
@@ -15,6 +20,7 @@ from sibilant.codecs import Codec, PCMACodec, PCMUCodec
 from sibilant.constants import SUPPORTED_RTP_VERSIONS
 from sibilant.exceptions import RTPUnsupportedCodec, RTPUnsupportedVersion
 from sibilant.helpers import (
+    DataclassEnum,
     FieldsEnum,
     FieldsEnumDatatype,
     ParseableSerializableRaw,
@@ -39,6 +45,7 @@ class RTPMediaType(enum.Enum):
 class RTPMediaFormat(FieldsEnumDatatype):
     """Represents an RTP media format type."""
 
+    # FIXME: should this be int only?
     payload_type: int | str
     media_type: RTPMediaType
     encoding_name: str
@@ -76,33 +83,30 @@ class RTPMediaFormat(FieldsEnumDatatype):
             raise RTPUnsupportedCodec(f"No codec set for this media format: {self!r}")
         return self.codec.decode(data)
 
+    def __hash__(self) -> int:
+        return hash((
+            self.payload_type,
+            self.media_type,
+            self.encoding_name,
+            self.clock_rate,
+            self.channels,
+            self.format_specific_parameters,
+        ))
+
 
 UNKNOWN_FORMAT = RTPMediaFormat("unknown", RTPMediaType.AUDIO_VIDEO, "unknown", 0)
 
 # TODO: implement enum matching on multiple fields (i.e. composite _value_), using a separate cls var
 
 
-class RTPMediaProfiles(FieldsEnum):
+class RTPMediaProfiles(RTPMediaFormat, DataclassEnum):
     """The known RTP media profiles."""
 
     __wrapped_type__ = RTPMediaFormat
     __allow_unknown__ = True
 
-    # FIXME: should this be int only? (same in RTPMediaFormat)
-    payload_type: int | str
-    media_type: RTPMediaType
-    encoding_name: str
-    clock_rate: int
-    channels: int | None
-    format_specific_parameters: str | None
-    codec_type: type[Codec] | None
-    codec: Codec | None
-
-    mimetype: str
-    encode: Callable[[NDArray[np.float32]], bytes]
-    decode: Callable[[bytes], NDArray[np.float32]]
-
     @classmethod
+    @lru_cache(maxsize=256)
     def match(
         cls,
         payload_type: int | str | None = None,
@@ -128,7 +132,7 @@ class RTPMediaProfiles(FieldsEnum):
 
         media_profile: RTPMediaProfiles | None = None
         try:
-            media_profile = RTPMediaProfiles(payload_type_raw)
+            media_profile = RTPMediaProfiles.match_value(payload_type_raw)
 
         except (TypeError, ValueError):
             if isinstance(payload_type_raw, str):
@@ -138,49 +142,61 @@ class RTPMediaProfiles(FieldsEnum):
                         break
 
         if media_profile is None:
-            media_profile = RTPMediaProfiles(
-                media_format
-                or dataclass_replace(UNKNOWN_FORMAT, payload_type=payload_type_raw)
+            media_format = media_format or dataclass_replace(
+                UNKNOWN_FORMAT, payload_type=payload_type_raw
+            )
+            media_profile = object.__new__(cls)
+            media_profile._name_ = "UNKNOWN"
+            media_profile._value_ = media_format
+            media_profile.__objclass__ = cls
+            media_profile._sort_order_ = 9999
+            media_profile.__init__(
+                *(getattr(media_format, f.name) for f in dataclass_fields(media_format))
             )
         assert media_profile is not None
         return media_profile
 
-    @property
+    @cached_property
     def fmt(self) -> RTPMediaFormat:
         """The wrapped media format."""
-        return cast(RTPMediaFormat, self._wrapped_value_)
-
-    # TODO: add custom _missing_ make it so we match profiles where some fields are None by default, but actual packet specifies something
+        if isinstance(self, FieldsEnum):
+            return cast(RTPMediaFormat, self._wrapped_value_)
+        else:
+            return cast(RTPMediaFormat, self._value_)
 
     # audio
-    PCMU = RTPMediaFormat(0, RTPMediaType.AUDIO, "PCMU", 8000, 1, codec_type=PCMUCodec)
-    GSM = RTPMediaFormat(3, RTPMediaType.AUDIO, "GSM", 8000, 1)
-    G723 = RTPMediaFormat(4, RTPMediaType.AUDIO, "G723", 8000, 1)
-    DVI4_8000 = RTPMediaFormat(5, RTPMediaType.AUDIO, "DVI4", 8000, 1)
-    DVI4_16000 = RTPMediaFormat(6, RTPMediaType.AUDIO, "DVI4", 16000, 1)
-    LPC = RTPMediaFormat(7, RTPMediaType.AUDIO, "LPC", 8000, 1)
-    PCMA = RTPMediaFormat(8, RTPMediaType.AUDIO, "PCMA", 8000, 1, codec_type=PCMACodec)
-    G722 = RTPMediaFormat(9, RTPMediaType.AUDIO, "G722", 8000, 1)
-    L16_2 = RTPMediaFormat(10, RTPMediaType.AUDIO, "L16", 44100, 2)
-    L16 = RTPMediaFormat(11, RTPMediaType.AUDIO, "L16", 44100, 1)
-    QCELP = RTPMediaFormat(12, RTPMediaType.AUDIO, "QCELP", 8000, 1)
-    CN = RTPMediaFormat(13, RTPMediaType.AUDIO, "CN", 8000, 1)
-    MPA = RTPMediaFormat(14, RTPMediaType.AUDIO, "MPA", 90000, None)
-    G728 = RTPMediaFormat(15, RTPMediaType.AUDIO, "G728", 8000, 1)
-    DVI4_11025 = RTPMediaFormat(16, RTPMediaType.AUDIO, "DVI4", 11025, 1)
-    DVI4_22050 = RTPMediaFormat(17, RTPMediaType.AUDIO, "DVI4", 22050, 1)
-    G729 = RTPMediaFormat(18, RTPMediaType.AUDIO, "G729", 8000, 1)
+    PCMU = (0, RTPMediaType.AUDIO, "PCMU", 8000, 1, None, PCMUCodec)
+    GSM = (3, RTPMediaType.AUDIO, "GSM", 8000, 1)
+    G723 = (4, RTPMediaType.AUDIO, "G723", 8000, 1)
+    DVI4_8000 = (5, RTPMediaType.AUDIO, "DVI4", 8000, 1)
+    DVI4_16000 = (6, RTPMediaType.AUDIO, "DVI4", 16000, 1)
+    LPC = (7, RTPMediaType.AUDIO, "LPC", 8000, 1)
+    PCMA = (8, RTPMediaType.AUDIO, "PCMA", 8000, 1, None, PCMACodec)
+    G722 = (9, RTPMediaType.AUDIO, "G722", 8000, 1)
+    L16_2 = (10, RTPMediaType.AUDIO, "L16", 44100, 2)
+    L16 = (11, RTPMediaType.AUDIO, "L16", 44100, 1)
+    QCELP = (12, RTPMediaType.AUDIO, "QCELP", 8000, 1)
+    CN = (13, RTPMediaType.AUDIO, "CN", 8000, 1)
+    MPA = (14, RTPMediaType.AUDIO, "MPA", 90000, None)
+    G728 = (15, RTPMediaType.AUDIO, "G728", 8000, 1)
+    DVI4_11025 = (16, RTPMediaType.AUDIO, "DVI4", 11025, 1)
+    DVI4_22050 = (17, RTPMediaType.AUDIO, "DVI4", 22050, 1)
+    G729 = (18, RTPMediaType.AUDIO, "G729", 8000, 1)
     # video
-    CELLB = RTPMediaFormat(25, RTPMediaType.VIDEO, "CELLB", 90000, None)
-    JPEG = RTPMediaFormat(26, RTPMediaType.VIDEO, "JPEG", 90000, None)
-    NV = RTPMediaFormat(28, RTPMediaType.VIDEO, "nv", 90000, None)
-    H261 = RTPMediaFormat(31, RTPMediaType.VIDEO, "H261", 90000, None)
-    MPV = RTPMediaFormat(32, RTPMediaType.VIDEO, "MPV", 90000, None)
-    MP2T = RTPMediaFormat(33, RTPMediaType.AUDIO_VIDEO, "MP2T", 90000, None)
-    H263 = RTPMediaFormat(34, RTPMediaType.VIDEO, "H263", 90000, None)
+    CELLB = (25, RTPMediaType.VIDEO, "CELLB", 90000, None)
+    JPEG = (26, RTPMediaType.VIDEO, "JPEG", 90000, None)
+    NV = (28, RTPMediaType.VIDEO, "nv", 90000, None)
+    H261 = (31, RTPMediaType.VIDEO, "H261", 90000, None)
+    MPV = (32, RTPMediaType.VIDEO, "MPV", 90000, None)
+    MP2T = (33, RTPMediaType.AUDIO_VIDEO, "MP2T", 90000, None)
+    H263 = (34, RTPMediaType.VIDEO, "H263", 90000, None)
     # misc
-    TELEPHONE_EVENT = RTPMediaFormat(
-        "telephone-event", RTPMediaType.AUDIO, "telephone-event", 8000, None
+    TELEPHONE_EVENT = (
+        "telephone-event",
+        RTPMediaType.AUDIO,
+        "telephone-event",
+        8000,
+        None,
     )
 
 
@@ -294,7 +310,7 @@ class RTPPacket(ParseableSerializableRaw):
                 self.extension,
                 self.csrc_count,
                 self.marker,
-                self.payload_type.value,
+                self.payload_type.payload_type,
                 self.sequence,
                 self.timestamp,
                 self.ssrc,

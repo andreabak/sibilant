@@ -14,7 +14,12 @@ from sibilant.exceptions import (
     SIPUnsupportedError,
     SIPUnsupportedVersion,
 )
-from sibilant.helpers import AutoFieldsEnum, ParseableSerializableRaw, SupportsStr
+from sibilant.helpers import (
+    DataclassEnum,
+    ParseableSerializableRaw,
+    SupportsStr,
+    slots_dataclass,
+)
 from sibilant.sdp import SDPSession
 from sibilant.structures import SIPURI
 
@@ -30,11 +35,14 @@ __all__ = [
 ]
 
 
-class SIPMethod(AutoFieldsEnum):
-    """Enum dataclass for SIP requests methods, along with their description."""
-
+@slots_dataclass(unsafe_hash=True)
+class SIPMethodData:
     name: str
     description: str
+
+
+class SIPMethod(SIPMethodData, DataclassEnum):
+    """Enum dataclass for SIP requests methods, along with their description."""
 
     @property
     def enum_value(self) -> Any:  # noqa: D102
@@ -100,12 +108,15 @@ class SIPMethod(AutoFieldsEnum):
     )
 
 
-class SIPStatus(AutoFieldsEnum):
-    """Enum dataclass for SIP responses status codes, along with their reason and description."""
-
+@slots_dataclass(unsafe_hash=True)
+class SIPStatusData:
     code: int
     reason: str
     description: str | None
+
+
+class SIPStatus(SIPStatusData, DataclassEnum):
+    """Enum dataclass for SIP responses status codes, along with their reason and description."""
 
     @property
     def enum_value(self) -> Any:  # noqa: D102
@@ -712,16 +723,16 @@ class SIPRequest(SIPMessage):
     @property
     @override
     def start_line(self) -> str:
-        return (
-            f"{self.method} {self.uri.serialize(force_brackets=False)} {self.version}"
-        )
+        return f"{self.method.name} {self.uri.serialize(force_brackets=False)} {self.version}"
 
     @classmethod
     @override
     def _parse_start_line(cls, start_line: bytes) -> dict[str, Any]:
         method_raw, uri_raw, version = start_line.decode("utf-8").split(" ")
         return dict(
-            method=SIPMethod(method_raw), uri=SIPURI.parse(uri_raw), version=version
+            method=SIPMethod.match_value(method_raw),
+            uri=SIPURI.parse(uri_raw),
+            version=version,
         )
 
     @override
@@ -765,7 +776,7 @@ class SIPResponse(SIPMessage):
     @override
     def _parse_start_line(cls, start_line: bytes) -> dict[str, Any]:
         version, code, reason = start_line.decode("utf-8").split(" ", 2)
-        status: SIPStatus = SIPStatus(int(code))
+        status: SIPStatus = SIPStatus.match_value(int(code))
         status.reason = reason
         return dict(status=status, version=version)
 

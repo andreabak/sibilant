@@ -479,7 +479,7 @@ class CSeqHeader(Header):
         from .messages import SIPMethod  # noqa: PLC0415
 
         sequence, method_raw = value.split(maxsplit=1)
-        method = SIPMethod(method_raw)
+        method = SIPMethod.match_value(method_raw)
         return cls(sequence=int(sequence), method=method)
 
     def serialize(self) -> str:  # noqa: D102

@@ -23,6 +23,7 @@ from typing import (
     Callable,
     ClassVar,
     Generic,
+    Hashable,
     Iterable,
     Iterator,
     Mapping,
@@ -86,8 +87,24 @@ class FieldsEnumDatatype:
         )
 
 
+class ValueMatchEnum(FieldsEnumDatatype, enum.Enum):
+    _enum_value_map_: ClassVar[dict[Hashable, Self]]
+
+    @classmethod
+    def match_value(cls, value: Any) -> Self:
+        if not hasattr(cls, "_enum_value_map_"):
+            cls._enum_value_map_ = {
+                member.enum_value: member for member in cls._member_map_.values()
+            }
+        if value in cls._member_map_:
+            return cls._member_map_[value]
+        if value in cls._enum_value_map_:
+            return cls._enum_value_map_[value]
+        raise ValueError(f"Not a valid {cls.__qualname__} value: {value}")
+
+
 # noinspection PyTypeChecker
-class FieldsEnum(enum.Enum):
+class FieldsEnum(ValueMatchEnum):
     """
     Custom enum class that's tied to a dataclass type and wraps its objects as members
     and proxies their attributes.
@@ -110,6 +127,8 @@ class FieldsEnum(enum.Enum):
             )
 
     def __new__(cls, value: Any) -> Self:  # noqa: D102
+        if not isinstance(value, cls.__wrapped_type__) and isinstance(value, tuple):
+            value = cls.__wrapped_type__(*value)
         if not isinstance(value, cls.__wrapped_type__):
             raise TypeError(
                 f"Expected subclass of {cls.__wrapped_type__.__name__}, got {type(value)}"
@@ -167,7 +186,7 @@ _AUTO = types.new_class(
 
 # noinspection PyAbstractClass
 # custom enum class that's tied to a dataclass and mirrors its fields on getattr
-class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
+class AutoFieldsEnum(FieldsEnum):
     """Enum class that mirrors the fields on a dataclass."""
 
     __wrapped_type__ = _AUTO
@@ -195,6 +214,12 @@ class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
         obj = cast(Self, FieldsEnum.__new_member__(cls, dtcls_value))
         obj._dtcls_value_ = dtcls_value
         return obj
+
+
+if sys.version_info >= (3, 12):
+    DataclassEnum = ValueMatchEnum
+else:
+    DataclassEnum = AutoFieldsEnum
 
 
 _T = TypeVar("_T")
