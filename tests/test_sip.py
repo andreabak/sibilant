@@ -6,7 +6,7 @@ import time
 import traceback
 from collections import defaultdict, deque, namedtuple
 from contextlib import contextmanager, nullcontext
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
@@ -15,6 +15,7 @@ from sibilant.exceptions import SIPException
 from sibilant.sip import (
     CallHandler,
     CallState,
+    HashedAuth,
     Header,
     Headers,
     MultipleValuesHeader,
@@ -25,7 +26,9 @@ from sibilant.sip import (
     SIPRegistration,
     SIPRequest,
     SIPResponse,
+    compute_auth,
 )
+from sibilant.structures import SIPURI
 
 from .conftest import Dest, MockServer
 
@@ -148,6 +151,63 @@ class TestSIPMessages:
                 )
 
                 previous_headers[header.name] = rebuilt_header
+
+
+class AuthParams(NamedTuple):
+    realm: str
+    nonce: str
+    method: str
+    qop: str | None
+    login: str
+    password: str
+    auth_uri: SIPURI
+    cnonce: str | None = None
+    nc: int | None = None
+
+
+@pytest.fixture
+def auth_samples() -> list[tuple[AuthParams, HashedAuth]]:
+    auth_responses = [
+        (
+            AuthParams(
+                realm="sip.twilio.com",
+                nonce="3KmK8fSJKaapgVlXobV26UmcL8Qq1WqRjl_UQX_Pmey2nmI_",
+                method="REGISTER",
+                qop="auth",
+                login="wa-bot-01",
+                password="HunterHunter2",
+                auth_uri=SIPURI.parse(
+                    "sip:wa-test.sip.frankfurt.twilio.com;transport=UDP"
+                ),
+                cnonce="a2d67228",
+                nc=14099,
+            ),
+            "3fa72cc5973eb4d986d7529503ae3b0c",
+        )
+    ]
+    return [
+        (
+            auth,
+            HashedAuth(
+                username=auth.login,
+                realm=auth.realm,
+                nonce=auth.nonce,
+                qop=auth.qop,
+                nc=f"{auth.nc:08}" if isinstance(auth.nc, int) else str(auth.nc),
+                cnonce=auth.cnonce,
+                uri=str(auth.auth_uri),
+                response=response,
+                algorithm="MD5",
+            ),
+        )
+        for auth, response in auth_responses
+    ]
+
+
+def test_auth_hash(auth_samples):
+    for auth, expected in auth_samples:
+        result = compute_auth(**auth._asdict())
+        assert result == expected
 
 
 PacketAndSIPMessage = namedtuple("PacketAndSIPMessage", ["packet", "message"])

@@ -86,6 +86,9 @@ class FieldsEnumDatatype:
             "Must be overridden by getting the value from the field"
         )
 
+    def __str__(self) -> str:
+        return str(self.enum_value)
+
 
 class ValueMatchEnum(FieldsEnumDatatype, enum.Enum):
     """Mixin to match enum members by a specified property value."""

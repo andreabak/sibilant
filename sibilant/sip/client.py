@@ -36,7 +36,7 @@ from typing import (
     runtime_checkable,
 )
 
-from typing_extensions import Self, override
+from typing_extensions import NamedTuple, Self, override
 
 import sibilant
 from sibilant import rtp, sdp
@@ -82,6 +82,79 @@ def generate_call_id(local_host: str, local_port: int | None = None) -> str:
 def generate_cseq() -> int:
     """Generate a random CSeq number for SIP requests."""
     return random.randrange(0, 2**15)
+
+
+class HashedAuth(NamedTuple):
+    """Computed hashed authentication results."""
+
+    username: str
+    realm: str
+    nonce: str
+    qop: str | None
+    nc: str | None
+    cnonce: str | None
+    uri: str
+    response: str
+    algorithm: str
+
+
+def compute_auth(
+    *,
+    realm: str,
+    nonce: str,
+    method: str,
+    qop: str | None,
+    login: str,
+    password: str,
+    auth_uri: SIPURI,
+    cnonce: str | None = None,
+    nc: int | None = None,
+) -> HashedAuth:
+    """
+    Generate hashed authentication params for Authorization headers.
+
+    :param realm: the realm value supplied by the server.
+    :param nonce: the nonce value supplied by the server.
+    :param method: the SIP CSeq method of the request.
+    :param qop: the quality of protection value supplied by the server, or None.
+    :param login: the username to authenticate.
+    :param password: the password for the username.
+    :param auth_uri: the SIPURI being authenticated.
+    :param cnonce: the client nonce to use, or None to generate one.
+    :param nc: the nonce count value, or None to use default 1.
+    :return: the generated authorization header.
+    """
+    if qop and qop not in {"auth", "auth-int"}:
+        raise NotImplementedError(f"Unsupported qop={qop} for authentication")
+    if nc is None and (qop or cnonce is not None):
+        raise ValueError("cnonce and nc must be set together")
+    nc_str = f"{nc:08}" if isinstance(nc, int) else str(nc)
+
+    def digest(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    ha1 = digest(f"{login}:{realm}:{password}")
+    ha2 = digest(f"{method}:{auth_uri}")
+    if qop:  # assumes already validated
+        qop = "auth"  # TODO: add auth-int support
+        if not cnonce:
+            cnonce = random.getrandbits(32).to_bytes(4, "big").hex()
+        auth_response = digest(f"{ha1}:{nonce}:{nc_str}:{cnonce}:{qop}:{ha2}")
+    else:
+        cnonce = None
+        auth_response = digest(f"{ha1}:{nonce}:{ha2}")
+
+    return HashedAuth(
+        username=login,
+        realm=realm,
+        nonce=nonce,
+        qop=qop,
+        nc=nc_str,
+        cnonce=cnonce,
+        uri=str(auth_uri),
+        response=auth_response,
+        algorithm="MD5",
+    )
 
 
 async def discard_statuses(
@@ -2315,42 +2388,25 @@ class SIPClient:  # noqa: PLR0904
             raise SIPBadResponse(f"No nonce in {authenticate_hdr_name} header")
         if "CSeq" not in response.headers:
             raise SIPBadResponse("No CSeq header in response")
-        method = response.headers["CSeq"].method
+        method = response.headers["CSeq"].method.name
         qop = authenticate_hdr.qop
-        if qop and qop not in {"auth", "auth-int"}:
-            raise NotImplementedError(
-                f"Unsupported qop={qop} in {authenticate_hdr_name} header"
-            )
-        if nc is None and (qop or cnonce is not None):
-            raise ValueError("cnonce and nc must be set together")
-        nc_str = f"{nc:08}" if isinstance(nc, int) else str(nc)
 
-        def digest(s: str) -> str:
-            return hashlib.md5(s.encode("utf-8")).hexdigest()
-
-        ha1 = digest(f"{self._login}:{realm}:{self._password}")
-        ha2 = digest(f"{method}:{self._auth_uri}")
-        if qop:  # assumes already validated
-            qop = "auth"  # TODO: add auth-int support
-            if not cnonce:
-                cnonce = random.getrandbits(32).to_bytes(4, "big").hex()
-            auth_response = digest(f"{ha1}:{nonce}:{nc_str}:{cnonce}:{qop}:{ha2}")
-        else:
-            cnonce = None
-            auth_response = digest(f"{ha1}:{nonce}:{ha2}")
-
-        hdr_cls = hdr.ProxyAuthorizationHeader if is_proxy else hdr.AuthorizationHeader
-        return hdr_cls(
-            username=self._login,
+        hashed_auth = compute_auth(
             realm=realm,
             nonce=nonce,
+            method=method,
             qop=qop,
-            nc=nc_str,
+            login=self._login,
+            password=self._password,
+            auth_uri=self._auth_uri,
             cnonce=cnonce,
-            uri=str(self._auth_uri),
-            response=auth_response,
-            algorithm="MD5",
+            nc=nc,
         )
+
+        if is_proxy:
+            return hdr.ProxyAuthorizationHeader(**hashed_auth._asdict())  # noqa: SLF001
+        else:
+            return hdr.AuthorizationHeader(**hashed_auth._asdict())  # noqa: SLF001
 
     def generate_capabilities_headers(self) -> list[hdr.Header]:
         """Generate the headers for the OPTIONS request."""
