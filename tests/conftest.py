@@ -151,7 +151,7 @@ def voip_calls():  # noqa: PLR0914
                     if match := re.search(
                         r"^c *= *IN +IP4 +\b(\d+\.\d+\.\d+\.\d+)\b",
                         data.decode(),  # noqa: B023
-                        re.M | re.I,
+                        re.MULTILINE | re.IGNORECASE,
                     ):
                         aux_src_str = match.group(1)
 
@@ -161,15 +161,27 @@ def voip_calls():  # noqa: PLR0914
                     if first_line.startswith(b"REGISTER"):
                         dest = Dest.SERVER
                     elif first_line.startswith(b"INVITE"):
-                        if re.search(rf"^Via:.*{src_str}", data.decode(), re.M | re.I):
+                        if re.search(
+                            rf"^Via:.*{src_str}",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.SERVER
                         else:
                             dest = Dest.CLIENT
                         extract_aux_ip()
                     elif first_line.startswith(b"SIP/2.0"):
-                        if re.search(r"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
+                        if re.search(
+                            r"^CSeq:.*REGISTER",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.CLIENT
-                        elif re.search(r"^CSeq:.*INVITE", data.decode(), re.M | re.I):
+                        elif re.search(
+                            r"^CSeq:.*INVITE",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.SERVER
                             extract_aux_ip()
 
@@ -222,7 +234,7 @@ def voip_calls():  # noqa: PLR0914
     return tuple(calls)
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets(voip_calls):
     """Return a list of SIP packets from all the calls."""
     return [
@@ -233,31 +245,31 @@ def sip_packets(voip_calls):
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_requests(sip_packets):
     """Return a list of SIP requests from all the calls."""
     return [packet for packet in sip_packets if not packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_responses(sip_packets):
     """Return a list of SIP responses from all the calls."""
     return [packet for packet in sip_packets if packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets_from_client(sip_packets):
     """Return a list of SIP packets from the client."""
     return [packet for packet in sip_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets_from_server(sip_packets):
     """Return a list of SIP packets from the server."""
     return [packet for packet in sip_packets if packet.dest == Dest.CLIENT]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets(voip_calls):
     """Return a list of RTP packets from all the calls."""
     return [
@@ -268,13 +280,13 @@ def rtp_packets(voip_calls):
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets_from_client(rtp_packets):
     """Return a list of RTP packets from the client."""
     return [packet for packet in rtp_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets_from_server(rtp_packets):
     """Return a list of RTP packets from the server."""
     return [packet for packet in rtp_packets if packet.dest == Dest.CLIENT]

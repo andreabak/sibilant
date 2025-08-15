@@ -350,12 +350,12 @@ class RTPStreamBuffer(RawIOBase):
     def _generate_next_dtmf_packets(
         self, defaults: Mapping[str, Any], duration_increase: int
     ) -> list[RTPPacket]:
-        assert (
-            self._event_profile is not None
-        ), "can't generate DTMF without an event profile"
-        assert (
-            self._events_active or self._events_codes_pending
-        ), "no dtmf active or pending"
+        assert self._event_profile is not None, (
+            "can't generate DTMF without an event profile"
+        )
+        assert self._events_active or self._events_codes_pending, (
+            "no dtmf active or pending"
+        )
 
         packets_to_send = []
         # get the first active or pending event if multiple
@@ -836,9 +836,9 @@ class RTPClient:
         )
 
     def _create_socket(self) -> socket.socket:
-        _socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-        _socket.setblocking(False)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+        sock.setblocking(False)
 
         attempt: int = 0
         random_port: bool = self._local_addr[1] == 0
@@ -849,7 +849,7 @@ class RTPClient:
                     random.randint(*DEFAULT_RTP_PORT_RANGE) // 2 * 2,
                 )
             try:
-                _socket.bind(self._local_addr)
+                sock.bind(self._local_addr)
                 break
             except OSError as e:
                 if random_port and e.errno == errno.EADDRINUSE:
@@ -863,7 +863,7 @@ class RTPClient:
                 else:
                     raise
 
-        return _socket
+        return sock
 
     def _create_recv_stream(self) -> RTPStreamBuffer:
         return RTPStreamBuffer(mode="w", event_profiles=self.event_profiles)

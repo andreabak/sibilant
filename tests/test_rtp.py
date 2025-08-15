@@ -302,9 +302,9 @@ class TestRTPClient:
             send_delay_factor=3e-3,
             pre_bind=True,
         )
-        assert (
-            client.local_port > 0
-        ), "Client port should have been assigned in pre_bind"
+        assert client.local_port > 0, (
+            "Client port should have been assigned in pre_bind"
+        )
         client_address = client.local_addr
         server = MockRTPServer(
             server_packets, server_address, client_address, send_delay=2e-3

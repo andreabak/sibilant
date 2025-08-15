@@ -66,9 +66,9 @@ class TestHeaders:
             else:
                 if not issubclass(header_cls, MultipleValuesHeader):
                     wrong_classes.append(header_name)
-        assert (
-            not wrong_classes
-        ), "Headers with multiple values should be MultipleValuesHeader"
+        assert not wrong_classes, (
+            "Headers with multiple values should be MultipleValuesHeader"
+        )
 
 
 class TestSIPMessages:
@@ -89,9 +89,9 @@ class TestSIPMessages:
                 packet.data.decode().split("\r\n\r\n", 1)[0].split("\r\n")[1:]
             )
             raw_headers = dict(tuple(line.split(": ", 1)) for line in raw_headers_lines)
-            assert list(headers.keys()) == list(
-                raw_headers.keys()
-            ), "Headers should be in the same order as the original message"
+            assert list(headers.keys()) == list(raw_headers.keys()), (
+                "Headers should be in the same order as the original message"
+            )
 
             def clean(s):
                 """Clean headers for comparison."""
@@ -103,26 +103,29 @@ class TestSIPMessages:
                 s = re.sub(r"\s*,\s*", ",", s)
                 # make all bool values uppercase
                 s = re.sub(
-                    r"\b(false|true)\b", lambda m: m.group(1).upper(), s, flags=re.I
+                    r"\b(false|true)\b",
+                    lambda m: m.group(1).upper(),
+                    s,
+                    flags=re.IGNORECASE,
                 )
                 # remove unnecessary quotes from nc=
-                s = re.sub(r'\bnc="(\w+)"', r"nc=\1", s, flags=re.I)
+                s = re.sub(r'\bnc="(\w+)"', r"nc=\1", s, flags=re.IGNORECASE)
                 # add quotes when missing in display name before <sip:...>
                 s = re.sub(r"(\w+) *(?=<sip:)", r'"\1" ', s)
                 # strip leading and trailing whitespace in each line
-                s = re.sub(r"^ +| +$", "", s, flags=re.M)
+                s = re.sub(r"^ +| +$", "", s, flags=re.MULTILINE)
                 return s.strip()
 
-            assert clean(str(headers)) == clean(
-                "\r\n".join(raw_headers_lines)
-            ), "Headers should serialize to the same string as the original message"
+            assert clean(str(headers)) == clean("\r\n".join(raw_headers_lines)), (
+                "Headers should serialize to the same string as the original message"
+            )
 
             previous_headers = Headers()
             for header in headers.values():
                 hdr_cls_name = header.__class__.__name__
-                assert (
-                    header.name in headers
-                ), f"{hdr_cls_name}: header name should be in Headers map"
+                assert header.name in headers, (
+                    f"{hdr_cls_name}: header name should be in Headers map"
+                )
                 assert (  # noqa: PT018
                     header.name.upper() in headers and header.name.lower() in headers
                 ), f"{hdr_cls_name}: headers should be case-insensitive"
@@ -131,15 +134,15 @@ class TestSIPMessages:
                 rebuilt_header = Header.parse(
                     header.name, serialized_value, previous_headers
                 )
-                assert (
-                    rebuilt_header.serialize() == serialized_value
-                ), f"{hdr_cls_name}: value should serialize without loss"
-                assert str(rebuilt_header) == str(
-                    header
-                ), f"{hdr_cls_name}: entire header should serialize without loss"
-                assert (
-                    rebuilt_header == header
-                ), f"{hdr_cls_name}: should be able to be rebuilt and still match"
+                assert rebuilt_header.serialize() == serialized_value, (
+                    f"{hdr_cls_name}: value should serialize without loss"
+                )
+                assert str(rebuilt_header) == str(header), (
+                    f"{hdr_cls_name}: entire header should serialize without loss"
+                )
+                assert rebuilt_header == header, (
+                    f"{hdr_cls_name}: should be able to be rebuilt and still match"
+                )
 
                 previous_headers[header.name] = rebuilt_header
 
@@ -147,7 +150,7 @@ class TestSIPMessages:
 PacketAndSIPMessage = namedtuple("PacketAndSIPMessage", ["packet", "message"])
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_transactions(sip_packets):
     """
     Return lists of packets and SIP messages, grouped by transaction.
@@ -173,7 +176,7 @@ def sip_transactions(sip_packets):
     return transactions
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_registrations(sip_transactions):
     """Return lists of SIP REGISTER transactions, grouped by transaction."""
     return {
@@ -183,7 +186,7 @@ def sip_registrations(sip_transactions):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_invites(sip_transactions):
     """Return lists of SIP INVITE transactions, grouped by transaction."""
     return {
@@ -193,7 +196,7 @@ def sip_invites(sip_transactions):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def incoming_invites(sip_invites):
     """Return lists of incoming SIP INVITE transactions, grouped by transaction."""
     return {
@@ -203,7 +206,7 @@ def incoming_invites(sip_invites):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def outgoing_invites(sip_invites):
     """Return lists of outgoing SIP INVITE transactions, grouped by transaction."""
     return {
@@ -320,15 +323,15 @@ def mute_caplog(caplog, mute, logger_name=None):
     return log_level_context
 
 
-@pytest.fixture()
+@pytest.fixture
 def _skip_register(monkeypatch):
-    async def mock_register(self):
+    async def mock_register(self):  # noqa: RUF029
         self._registered = True
 
     monkeypatch.setattr(SIPRegistration, "register", mock_register)
 
 
-@pytest.fixture()
+@pytest.fixture
 def _skip_deregister(monkeypatch):
     original__register_transaction = SIPRegistration._register_transaction
 
@@ -395,9 +398,9 @@ class TestSIPClient:
                         time.sleep(1e-9)
                     _logger.debug("Stopping test")
 
-                    assert (
-                        expect_failure or client.registered
-                    ), "Client should be registered"
+                    assert expect_failure or client.registered, (
+                        "Client should be registered"
+                    )
 
                     raise StopIteration
 
@@ -460,9 +463,9 @@ class TestSIPClient:
                 assert not client._pending_futures, "expected client to be done"
                 assert server.sent_count, "at least one message should have been sent"
                 assert call, "expected at least one call to have started"
-                assert (
-                    call.state in expected_states
-                ), "call should be in expected states"
+                assert call.state in expected_states, (
+                    "call should be in expected states"
+                )
                 expected_sent_count = len([m for m in server_packets if m is not None])
                 assert server.sent_count == expected_sent_count
 

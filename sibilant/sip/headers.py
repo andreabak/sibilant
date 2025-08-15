@@ -39,37 +39,37 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "Header",
-    "StrHeader",
-    "UnknownHeader",
-    "IntHeader",
-    "ListHeader",
-    "MultipleValuesHeader",
-    "ViaEntry",
-    "ViaHeader",
-    "FromToHeader",
-    "FromHeader",
-    "ToHeader",
+    "AllowHeader",
+    "AuthorizationHeader",
+    "CSeqHeader",
+    "CallIDHeader",
     "Contact",
     "ContactHeader",
-    "RouteHeader",
-    "RecordRouteHeader",
-    "CallIDHeader",
-    "CSeqHeader",
-    "AllowHeader",
-    "SupportedHeader",
-    "ExpiresHeader",
-    "ContentTypeHeader",
     "ContentLengthHeader",
+    "ContentTypeHeader",
+    "ExpiresHeader",
+    "FromHeader",
+    "FromToHeader",
+    "Header",
+    "Headers",
+    "IntHeader",
+    "ListHeader",
     "MaxForwardsHeader",
-    "UserAgentHeader",
-    "AuthorizationHeader",
-    "WWWAuthenticateHeader",
-    "ProxyAuthorizationHeader",
-    "ProxyAuthenticateHeader",
+    "MultipleValuesHeader",
     "PAssertedIdentityHeader",
     "PPreferredIdentityHeader",
-    "Headers",
+    "ProxyAuthenticateHeader",
+    "ProxyAuthorizationHeader",
+    "RecordRouteHeader",
+    "RouteHeader",
+    "StrHeader",
+    "SupportedHeader",
+    "ToHeader",
+    "UnknownHeader",
+    "UserAgentHeader",
+    "ViaEntry",
+    "ViaHeader",
+    "WWWAuthenticateHeader",
 ]
 
 
@@ -132,7 +132,7 @@ class Header(
             value = ListHeader._separator.join(values)  # noqa: SLF001
         else:
             value = values[0]
-        return cast(Self, header_cls.from_raw_value(header, value, previous_headers))
+        return cast("Self", header_cls.from_raw_value(header, value, previous_headers))
 
     @classmethod
     @abstractmethod
@@ -712,7 +712,7 @@ class Headers(CaseInsensitiveDict[_H]):
             headers_values[header].append(raw_value)
 
         for header, raw_values in headers_values.items():
-            headers[header] = cast(_H, Header.parse(header, raw_values, headers))
+            headers[header] = cast("_H", Header.parse(header, raw_values, headers))
 
         return headers
 

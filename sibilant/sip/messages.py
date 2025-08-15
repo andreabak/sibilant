@@ -27,11 +27,11 @@ from .headers import Headers
 
 
 __all__ = [
-    "SIPMethod",
-    "SIPStatus",
     "SIPMessage",
+    "SIPMethod",
     "SIPRequest",
     "SIPResponse",
+    "SIPStatus",
 ]
 
 
@@ -651,7 +651,7 @@ class SIPMessage(ParseableSerializableRaw, ABC):
             body: Any = cls._parse_body(headers, body_raw)
             return cls(**start_line_kwargs, headers=headers, body=body, origin=origin)
         # FIXME: improve broad error handling
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise SIPParseError(f"Failed to parse SIP message: {e}\n{data!r}") from e
 
     @classmethod

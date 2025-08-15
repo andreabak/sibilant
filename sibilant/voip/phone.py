@@ -36,9 +36,6 @@ if TYPE_CHECKING:
     from sibilant.structures import SIPAddress
 
 
-# ruff: noqa: ARG002
-
-
 _logger = logging.getLogger(__name__)
 
 

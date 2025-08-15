@@ -148,9 +148,9 @@ class RTPMediaProfiles(RTPMediaFormat, DataclassEnum):
             media_profile = object.__new__(cls)
             media_profile._name_ = "UNKNOWN"
             media_profile._value_ = media_format
-            media_profile.__objclass__ = cls
-            media_profile._sort_order_ = 9999
-            media_profile.__init__(
+            media_profile.__objclass__ = cls  # type: ignore[attr-defined]
+            media_profile._sort_order_ = 9999  # type: ignore[attr-defined]
+            media_profile.__init__(  # type: ignore[misc]  # noqa: PLC2801
                 *(getattr(media_format, f.name) for f in dataclass_fields(media_format))
             )
         assert media_profile is not None
@@ -160,9 +160,9 @@ class RTPMediaProfiles(RTPMediaFormat, DataclassEnum):
     def fmt(self) -> RTPMediaFormat:
         """The wrapped media format."""
         if isinstance(self, FieldsEnum):
-            return cast(RTPMediaFormat, self._wrapped_value_)
+            return cast("RTPMediaFormat", self._wrapped_value_)
         else:
-            return cast(RTPMediaFormat, self._value_)
+            return cast("RTPMediaFormat", self._value_)
 
     # audio
     PCMU = (0, RTPMediaType.AUDIO, "PCMU", 8000, 1, None, PCMUCodec)
@@ -233,7 +233,9 @@ class RTPPacket(ParseableSerializableRaw):
             cls._ext_header_u32.calcsize() // 8 + ext_len * 4 if extension else 0
         )
         return (
-            cast(int, cls._format_u64.calcsize()) // 8 + csrc_count * 4 + extension_len
+            cast("int", cls._format_u64.calcsize()) // 8
+            + csrc_count * 4
+            + extension_len
         )
 
     @property
@@ -303,7 +305,7 @@ class RTPPacket(ParseableSerializableRaw):
 
     def serialize(self) -> bytes:  # noqa: D102
         header_data: bytes = cast(
-            bytes,
+            "bytes",
             self._format_u64.pack(
                 self.version,
                 self.padding,

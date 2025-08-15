@@ -469,9 +469,7 @@ class SIPDialog(ABC):
             try:
                 response = await self._wait_for_message(self._client.register_timeout)
             except asyncio.TimeoutError:
-                raise SIPTimeout(  # noqa: B904
-                    f"Timed out waiting for {method} response"
-                )
+                raise SIPTimeout(f"Timed out waiting for {method} response")
 
             if not isinstance(response, SIPResponse):
                 raise SIPBadResponse(f"Unexpected response for {method}: {response!r}")
@@ -858,7 +856,7 @@ class SIPCall(SIPDialog):
         try:
             yield
         # TODO: better handle other exceptions, like bad request, and send appropriate response
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._state = CallState.FAILED
             self._failure_exception = exc
             self._close()
@@ -1796,7 +1794,7 @@ class SIPClient:  # noqa: PLR0904
         # ):
         #     raise exception
         if _logger.getEffectiveLevel() <= logging.DEBUG:
-            _logger.exception(message, exc_info=exception)
+            _logger.exception(message, exc_info=exception)  # noqa: LOG004
         else:
             _logger.error(message)
 
@@ -1805,7 +1803,11 @@ class SIPClient:  # noqa: PLR0904
             raise RuntimeError("Cannot track future from another event loop")
         self._pending_futures.append(future)
 
-    def _schedule(self, coro: Awaitable) -> concurrent.futures.Future:
+    _rT = TypeVar("_rT")  # noqa: N815
+
+    def _schedule(
+        self, coro: Coroutine[Any, Any, _rT]
+    ) -> concurrent.futures.Future[_rT]:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._track_future(future)
         return future

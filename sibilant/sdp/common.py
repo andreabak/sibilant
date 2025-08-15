@@ -33,21 +33,21 @@ from sibilant.helpers import (
 
 
 __all__ = [
-    "SDPField",
-    "SDPAttribute",
     "FlagAttribute",
-    "UnknownAttribute",
+    "InactiveFlag",
     "MediaFlowAttribute",
     "RecvOnlyFlag",
-    "SendRecvFlag",
-    "SendOnlyFlag",
-    "InactiveFlag",
-    "SDPInformationField",
-    "SDPConnectionField",
-    "SDPBandwidthField",
-    "SDPEncryptionField",
+    "SDPAttribute",
     "SDPAttributeField",
+    "SDPBandwidthField",
+    "SDPConnectionField",
+    "SDPEncryptionField",
+    "SDPField",
+    "SDPInformationField",
     "SDPSection",
+    "SendOnlyFlag",
+    "SendRecvFlag",
+    "UnknownAttribute",
 ]
 
 
@@ -77,10 +77,10 @@ class SDPField(Registry[str, "SDPField"], ParseableSerializable, ABC):
         try:
             field_cls = cls.__registry_get_class_for__(field_type)
         except KeyError:
-            raise SDPUnknownFieldError(f"Unknown SDP field type {field_type}")  # noqa: B904
+            raise SDPUnknownFieldError(f"Unknown SDP field type {field_type}")
 
         return cast(
-            Self, field_cls.from_raw_value(field_type=field_type, raw_value=raw_value)
+            "Self", field_cls.from_raw_value(field_type=field_type, raw_value=raw_value)
         )
 
     @classmethod
@@ -160,7 +160,7 @@ class SDPAttribute(
             registry_name if is_known_attribute else DEFAULT
         )
 
-        return cast(Self, attr_cls.from_raw_value(name, raw_value))
+        return cast("Self", attr_cls.from_raw_value(name, raw_value))
 
     @classmethod
     @abstractmethod

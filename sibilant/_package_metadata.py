@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Sequence
 import toml
 
 
-metadata: Message | Mapping[str, Any] | None = None
+metadata: Message | importlib_metadata.PackageMetadata | Mapping[str, Any] | None = None
 # FIXME: give precedence to pyproject.toml metadata for correct info in local testing
 try:
     metadata = importlib_metadata.metadata(__package__ or __name__)

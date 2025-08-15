@@ -65,7 +65,7 @@ def slots_dataclass(*args: Any, **kwargs: Any) -> Callable[[_dT], _dT]:
         kwargs.pop("slots", None)
     else:
         kwargs.setdefault("slots", True)
-    return cast(Callable[[_dT], _dT], _dtcls(*args, **kwargs))
+    return cast("Callable[[_dT], _dT]", _dtcls(*args, **kwargs))
 
 
 @runtime_checkable
@@ -88,18 +88,22 @@ class FieldsEnumDatatype:
 
 
 class ValueMatchEnum(FieldsEnumDatatype, enum.Enum):
+    """Mixin to match enum members by a specified property value."""
+
     _enum_value_map_: ClassVar[dict[Hashable, Self]]
 
     @classmethod
     def match_value(cls, value: Any) -> Self:
+        """Match a value to a member."""
         if not hasattr(cls, "_enum_value_map_"):
             cls._enum_value_map_ = {
-                member.enum_value: member for member in cls._member_map_.values()
+                cast("Self", member).enum_value: cast("Self", member)
+                for member in cls._member_map_.values()
             }
         if value in cls._member_map_:
-            return cls._member_map_[value]
-        if value in cls._enum_value_map_:
-            return cls._enum_value_map_[value]
+            return cast("Self", cls._member_map_[value])
+        if value in cls._enum_value_map_:  # type: ignore[operator]
+            return cast("Self", cls._enum_value_map_[value])  # type: ignore[index]
         raise ValueError(f"Not a valid {cls.__qualname__} value: {value}")
 
 
@@ -168,7 +172,7 @@ class FieldsEnum(ValueMatchEnum):
         if not cls.__allow_unknown__:
             return None
 
-        obj = cast(FieldsEnum, cls.__new_member__(cls, value))
+        obj = cast("FieldsEnum", cls.__new_member__(cls, value))  # type: ignore[arg-type]
         obj._name_ = cls.__unknown_member_name__
         return obj
 
@@ -199,7 +203,7 @@ class AutoFieldsEnum(FieldsEnum):
         from the __annotations__ of this class.
         """
         dtcls = types.new_class(cls.__name__ + "Dataclass", bases=(FieldsEnumDatatype,))
-        dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})
+        dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})  # noqa: RUF063
         dtcls.__module__ = cls.__module__
         dtcls.__qualname__ = cls.__qualname__ + "Dataclass"
         dtcls.__doc__ = cls.__doc__
@@ -211,7 +215,7 @@ class AutoFieldsEnum(FieldsEnum):
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:  # noqa: D102
         dtcls_value = cls.__wrapped_type__(*args, **kwargs)
         # yes, enum metaclasses make a mess of this
-        obj = cast(Self, FieldsEnum.__new_member__(cls, dtcls_value))
+        obj = cast("Self", FieldsEnum.__new_member__(cls, dtcls_value))
         obj._dtcls_value_ = dtcls_value
         return obj
 
@@ -459,7 +463,7 @@ class Registry(ABC, Generic[_ID, _RT]):
     def __registry_new_for__(cls, registry_id: _ID, *args: Any, **kwargs: Any) -> _RT:
         registered_cls: type[_RT] = cls.__registry_get_class_for__(registry_id)
         # noinspection PyArgumentList
-        return cast(_RT, registered_cls(*args, **kwargs))
+        return cast("_RT", registered_cls(*args, **kwargs))
 
 
 _sT_contra = TypeVar("_sT_contra", str, bytes, contravariant=True)
@@ -627,7 +631,9 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
             raise TypeError(f"Invalid splitter for {cls.__name__}: {splitter!r}")
         vcls = cls._values_type
         values: list[_ST] = [
-            vcls.parse(value) if issubclass(vcls, Parseable) else vcls(value)
+            cast(
+                "_ST", vcls.parse(value) if issubclass(vcls, Parseable) else vcls(value)
+            )
             for value in str_values
         ]
         return dict(values=values, raw_value=raw_value)
@@ -694,7 +700,7 @@ def time_cache(
             return func(*args, **kwargs)
 
         wrapper = cast(
-            _TimeCachedCallable[_rV_co],
+            "_TimeCachedCallable[_rV_co]",
             functools.lru_cache(maxsize=maxsize, typed=typed)(_wrapper),
         )
 
@@ -739,7 +745,7 @@ def get_local_ip_for_dest(host: str) -> str:
     """Get the IP address of the current machine relative to the given host on the local network."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.connect((host, 0))
-        return cast(str, s.getsockname()[0])
+        return cast("str", s.getsockname()[0])
 
 
 def get_external_ip_for_dest(host: str) -> str:
@@ -759,18 +765,18 @@ def db_to_amplitude(db: float, *, ref: float = 1.0) -> float: ...
 
 @overload
 def db_to_amplitude(
-    db: NDArray[np.float32], *, ref: float = 1.0
-) -> NDArray[np.float32]: ...
+    db: NDArray[np.floating], *, ref: float = 1.0
+) -> NDArray[np.floating]: ...
 
 
 @overload
 def db_to_amplitude(
-    db: float | NDArray[np.float32], *, ref: float = 1.0
-) -> float | NDArray[np.float32]: ...
+    db: float | NDArray[np.floating], *, ref: float = 1.0
+) -> float | NDArray[np.floating]: ...
 
 
 def db_to_amplitude(
-    db: float | NDArray[np.float32], *, ref: float = 1.0
-) -> float | NDArray[np.float32]:
+    db: float | NDArray[np.floating], *, ref: float = 1.0
+) -> float | NDArray[np.floating]:
     """Convert dB-scaled values to amplitude."""
     return ((ref**2) * np.power(10.0, db * 0.1)) ** 0.5

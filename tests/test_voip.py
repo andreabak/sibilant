@@ -11,7 +11,7 @@ from sibilant.voip import VoIPPhone
 _logger = logging.getLogger(__name__)
 
 
-@pytest.mark.needs_test_server()
+@pytest.mark.needs_test_server
 class TestVoIPPhoneReal:
     def test_start_stop(self, test_server_kwargs):
         phone = VoIPPhone(**test_server_kwargs)

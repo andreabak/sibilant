@@ -7,7 +7,7 @@ The unencoded audio format is float 32-bit PCM, returned as numpy arrays.
 from __future__ import annotations
 
 import audioop
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from typing_extensions import override
@@ -20,12 +20,13 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "PCMUCodec",
     "PCMACodec",
+    "PCMUCodec",
 ]
 
 
-# ruff: noqa: E221, E241, UP034, PLR2004
+# ruff: noqa: E221, E241, UP034
+# mypy: disable-error-code="assignment, arg-type, return-value"
 
 
 def ulaw_encode_slow(data: NDArray[np.float32]) -> NDArray[np.uint8]:
@@ -105,7 +106,7 @@ def alaw_encode_slow(data: NDArray[np.float32]) -> NDArray[np.uint8]:
     res[mask] = (exp[mask] << 4) | mant[mask]
     res[~mask] = data_i16[~mask] >> 4
 
-    return np.bitwise_xor(res, (sign ^ 0x55))
+    return cast("NDArray[np.uint8]", np.bitwise_xor(res, (sign ^ 0x55)))
 
 
 alaw_comp_table: NDArray[np.uint8] = np.floor(
