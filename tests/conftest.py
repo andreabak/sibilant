@@ -9,7 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, Iterator, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import dpkt
 import pytest
@@ -17,6 +17,7 @@ from dpkt.utils import inet_to_str
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from types import TracebackType
 
 

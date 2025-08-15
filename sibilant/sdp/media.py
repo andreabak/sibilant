@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass, field as dataclass_field
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self, override
 
@@ -29,6 +29,10 @@ from .common import (
     UnknownAttribute,
     ValueAttribute,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 __all__ = [

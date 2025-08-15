@@ -4,9 +4,13 @@ import importlib.metadata as importlib_metadata
 import warnings
 from email.message import Message
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import toml
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
 
 
 metadata: Message | importlib_metadata.PackageMetadata | Mapping[str, Any] | None = None

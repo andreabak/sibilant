@@ -9,7 +9,7 @@ authors = [
     {name = "abk16", email = "awaken.mulled505@4wrd.cc"}
 ]
 version = "0.3.5"
-requires-python = ">=3.8,<3.13"
+requires-python = ">=3.10,<3.13"
 license = {text = "MPL-2.0"}
 license-files = {paths = ["LICENSE"]}
 readme = "README.md"
@@ -47,7 +47,7 @@ features = ["dev"]
 template = "dev"
 
 [[tool.hatch.envs.hatch-test.matrix]]
-python = ["3.8", "3.9", "3.10", "3.11", "3.12"]
+python = ["3.10", "3.11", "3.12"]
 
 [tool.ruff]
 fix = true

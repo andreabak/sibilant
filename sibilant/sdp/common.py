@@ -6,11 +6,9 @@ from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import InitVar, dataclass
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
-    List,
-    MutableMapping,
-    Union,
     cast,
     get_origin,
     get_type_hints,
@@ -30,6 +28,10 @@ from sibilant.helpers import (
     StrValueMixin,
     try_unpack_optional_type,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import MutableMapping
 
 
 __all__ = [
@@ -110,7 +112,7 @@ class SDPField(Registry[str, "SDPField"], ParseableSerializable, ABC):
 
 @dataclass
 class SDPAttribute(
-    Registry[Union[str, DefaultType], "SDPAttribute"], ParseableSerializable, ABC
+    Registry[str | DefaultType, "SDPAttribute"], ParseableSerializable, ABC
 ):
     """Abstract base dataclass for SDP attributes."""
 
@@ -440,7 +442,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
     def _reveal_wrapped_type(cls, field_type: Any) -> type:
         if isinstance(field_type, str) and field_type in globals():
             field_type = globals()[field_type]
-        if get_origin(field_type) in {list, List}:
+        if get_origin(field_type) in {list, list}:
             field_type = field_type.__args__[0]
         field_type = try_unpack_optional_type(field_type)
         if isinstance(field_type, type):
@@ -519,7 +521,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
             assert sdp_type is not None
             assert value is not None
             field_name, field_type, _ = cls._sdp_fields_map[sdp_type]
-            if get_origin(field_type) in {list, List}:
+            if get_origin(field_type) in {list, list}:
                 fields.setdefault(field_name, []).append(value)
             else:
                 if field_name in fields:
@@ -550,7 +552,7 @@ class SDPSection(ParseableSerializableRaw, ABC):
             value = getattr(self, field_name)
             if value is None:
                 continue
-            if get_origin(field_type) in {list, List}:
+            if get_origin(field_type) in {list, list}:
                 serialized_fields.extend(map(str, value))
             else:
                 serialized_fields.append(str(value))

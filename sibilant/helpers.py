@@ -14,22 +14,25 @@ import types
 import urllib.request
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import MutableSequence
-from dataclasses import dataclass as _dtcls, is_dataclass
-from inspect import isabstract
-from typing import (
-    TYPE_CHECKING,
-    Any,
+from collections.abc import (
     Callable,
-    ClassVar,
-    Generic,
     Hashable,
     Iterable,
     Iterator,
     Mapping,
     MutableMapping,
-    Pattern,
+    MutableSequence,
+)
+from dataclasses import dataclass as _dtcls, is_dataclass
+from inspect import isabstract
+from re import Pattern
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Generic,
     Protocol,
+    TypeAlias,
     TypeVar,
     Union,
     cast,
@@ -40,7 +43,7 @@ from typing import (
 )
 
 import numpy as np
-from typing_extensions import Self, TypeAlias, dataclass_transform
+from typing_extensions import Self, dataclass_transform
 
 from .constants import PUBLIC_IP_RESOLVERS
 
@@ -61,10 +64,7 @@ _dT = TypeVar("_dT")
 def slots_dataclass(*args: Any, **kwargs: Any) -> Callable[[_dT], _dT]:
     """Wrapper for dataclass decorator that adds slots if supported (py3.10+)."""
     # TODO: restore slots=True default once https://github.com/python/cpython/issues/91126 is fixed
-    if sys.version_info < (3, 10):
-        kwargs.pop("slots", None)
-    else:
-        kwargs.setdefault("slots", True)
+    kwargs.setdefault("slots", True)
     return cast("Callable[[_dT], _dT]", _dtcls(*args, **kwargs))
 
 
@@ -125,10 +125,17 @@ class FieldsEnum(ValueMatchEnum):
         cls_name = cls.__name__
         if getattr(cls, "__wrapped_type__", None) is None:
             raise TypeError(f"{cls_name} must define __wrapped_type__")
-        if not issubclass(cls.__wrapped_type__, FieldsEnumDatatype):
-            raise TypeError(
-                f"{cls_name}.__wrapped_type__ must be a subclass of {FieldsEnumDatatype.__name__}"
-            )
+
+    @classmethod
+    def _get_enum_value(cls, objs: Any) -> Any:
+        exc: BaseException | None = None
+        for src in objs:
+            try:
+                return src.enum_value
+            except (NotImplementedError, AttributeError) as exc:  # noqa: PERF203
+                exc = exc  # noqa: PLW0127
+        assert exc is not None
+        raise exc
 
     def __new__(cls, value: Any) -> Self:  # noqa: D102
         if not isinstance(value, cls.__wrapped_type__) and isinstance(value, tuple):
@@ -144,17 +151,7 @@ class FieldsEnum(ValueMatchEnum):
         obj = object.__new__(cls)
         obj._wrapped_value_ = value
 
-        exc = None
-        for src in (obj, value):
-            try:
-                enum_value = src.enum_value
-                break
-            except (NotImplementedError, AttributeError):
-                pass
-        else:
-            assert exc is not None
-            raise exc
-
+        enum_value = cls._get_enum_value((obj, value))
         obj._value_ = enum_value
         return obj
 
@@ -164,7 +161,7 @@ class FieldsEnum(ValueMatchEnum):
     def _missing_(cls, value: Any) -> FieldsEnum | None:
         if isinstance(value, cls.__wrapped_type__):
             try:
-                return cls(value.enum_value)
+                return cls(cls._get_enum_value((value,)))
             except (ValueError, TypeError):
                 if not cls.__allow_unknown__:
                     raise
@@ -180,7 +177,7 @@ class FieldsEnum(ValueMatchEnum):
         return getattr(self._wrapped_value_, name)
 
     def __str__(self) -> str:
-        return str(self.enum_value)
+        return str(self._get_enum_value((self, self._wrapped_value_)))
 
 
 _AUTO = types.new_class(
@@ -202,12 +199,10 @@ class AutoFieldsEnum(FieldsEnum):
         Dynamically generate a dataclass from the enum definition, frozen, with slots,
         from the __annotations__ of this class.
         """
-        dtcls = types.new_class(cls.__name__ + "Dataclass", bases=(FieldsEnumDatatype,))
-        dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})  # noqa: RUF063
-        dtcls.__module__ = cls.__module__
-        dtcls.__qualname__ = cls.__qualname__ + "Dataclass"
-        dtcls.__doc__ = cls.__doc__
-        dtcls = slots_dataclass(frozen=True)(dtcls)
+        dtcls_candidates = [c for c in cls.mro() if c is not cls and is_dataclass(c)]
+        if not dtcls_candidates:
+            raise TypeError(f"{cls.__qualname__} must inherit from a dataclass!")
+        dtcls = dtcls_candidates[0]
         cls.__wrapped_type__ = dtcls
 
         super().__init_subclass__(**kwargs)
@@ -220,7 +215,7 @@ class AutoFieldsEnum(FieldsEnum):
         return obj
 
 
-if sys.version_info >= (3, 12):
+if sys.version_info >= (3, 11):
     DataclassEnum = ValueMatchEnum
 else:
     DataclassEnum = AutoFieldsEnum
@@ -594,7 +589,7 @@ class IntValueMixin(FieldsParserSerializer):
         return self.value
 
 
-_ST = TypeVar("_ST", bound=Union[SupportsStr, ParseableSerializable])
+_ST = TypeVar("_ST", bound=SupportsStr | ParseableSerializable)
 
 
 @slots_dataclass

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import field as dataclass_field
-from typing import Collection, Mapping, Match
+from re import Match
+from typing import TYPE_CHECKING
 
 from frozendict import frozendict
 from typing_extensions import Self
 
 from .exceptions import SIPParseError
 from .helpers import ParseableSerializable, slots_dataclass
+
+
+if TYPE_CHECKING:
+    from collections.abc import Collection, Mapping
 
 
 DEFAULT_SCHEME: str = "sip"

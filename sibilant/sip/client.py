@@ -16,11 +16,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import replace as dataclass_replace
-from functools import partial
-from types import MappingProxyType, TracebackType
-from typing import (
-    Any,
+from collections.abc import (
     AsyncGenerator,
     Awaitable,
     Callable,
@@ -28,8 +24,14 @@ from typing import (
     Coroutine,
     Mapping,
     MutableMapping,
-    Protocol,
     Sequence,
+)
+from dataclasses import replace as dataclass_replace
+from functools import partial
+from types import MappingProxyType, TracebackType
+from typing import (
+    Any,
+    Protocol,
     TypeVar,
     runtime_checkable,
 )
@@ -1821,7 +1823,7 @@ class SIPClient:  # noqa: PLR0904
                 try:
                     data, addr = self._socket.recvfrom(8192)
                     # TODO: assert addr == self._server_addr?
-                except (socket.timeout, BlockingIOError, ConnectionResetError):
+                except (TimeoutError, BlockingIOError, ConnectionResetError):
                     pass
                 else:
                     msg = SIPMessage.parse(data, origin=addr)

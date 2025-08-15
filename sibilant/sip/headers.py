@@ -10,9 +10,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Mapping,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -35,6 +33,8 @@ from sibilant.structures import SIPAddress
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .messages import SIPMethod
 
 
@@ -77,7 +77,7 @@ _H = TypeVar("_H", bound="Header")
 
 
 class Header(
-    Registry[Union[str, DefaultType], "Header"],
+    Registry[str | DefaultType, "Header"],
     ABC,
     registry=True,
     registry_attr="_name",
@@ -192,7 +192,7 @@ class IntHeader(IntValueMixin, Header, ABC):
         return cls(**cls.parse_raw_value(value))
 
 
-_ST = TypeVar("_ST", bound=Union[SupportsStr, ParseableSerializable])
+_ST = TypeVar("_ST", bound=SupportsStr | ParseableSerializable)
 
 
 class ListHeader(ListValueMixin[_ST], Header, ABC):

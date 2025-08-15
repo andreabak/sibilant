@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
-import socket
 import time
 import traceback
 from collections import defaultdict, deque, namedtuple
 from contextlib import contextmanager, nullcontext
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -29,6 +28,10 @@ from sibilant.sip import (
 )
 
 from .conftest import Dest, MockServer
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 _logger = logging.getLogger(__name__)
@@ -264,7 +267,7 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
     def recv(self):
         try:
             data, addr = self.socket.recvfrom(8192)
-        except (socket.timeout, BlockingIOError):
+        except (TimeoutError, BlockingIOError):
             pass
         else:
             if not data.strip():

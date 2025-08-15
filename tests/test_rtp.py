@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import itertools
 import random
-import socket
 import time
 from collections import defaultdict, namedtuple
 
@@ -239,7 +238,7 @@ class MockRTPServer(MockServer):
         pre_time_ns = time.perf_counter_ns()
         try:
             data, _addr = self.socket.recvfrom(8192)
-        except (socket.timeout, BlockingIOError):
+        except (TimeoutError, BlockingIOError):
             pass
         else:
             packet: RTPPacket = RTPPacket.parse(data)

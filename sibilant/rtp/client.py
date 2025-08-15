@@ -10,15 +10,13 @@ import socket
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Collection, Mapping
 from io import RawIOBase
 from types import MappingProxyType, TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Collection,
     Literal,
-    Mapping,
     NamedTuple,
 )
 
@@ -936,7 +934,7 @@ class RTPClient:
             packet: RTPPacket | None = None
             try:
                 data, _addr = self._socket.recvfrom(8192)
-            except (socket.timeout, BlockingIOError):
+            except (TimeoutError, BlockingIOError):
                 pass
             else:
                 try:

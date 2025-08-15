@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, ClassVar, Literal, Mapping, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias, cast
 
 import numpy as np
 from cbitstruct import CompiledFormat
-from typing_extensions import Self, TypeAlias
+from typing_extensions import Self
 
 from sibilant.helpers import ParseableSerializableRaw, slots_dataclass
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from numpy.typing import NDArray
 
 

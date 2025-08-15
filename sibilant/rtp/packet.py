@@ -11,7 +11,7 @@ from dataclasses import (
     replace as dataclass_replace,
 )
 from functools import cached_property, lru_cache
-from typing import TYPE_CHECKING, Any, ClassVar, Iterator, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from cbitstruct import CompiledFormat
 from typing_extensions import Self
@@ -29,6 +29,8 @@ from sibilant.helpers import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     import numpy as np
     from numpy.typing import NDArray
 
