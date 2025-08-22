@@ -274,7 +274,7 @@ class TestRTPClient:
         cls, server_packets, client_packets, server_address=None, client_address=None
     ):
         if server_address is None:
-            server_address = "127.0.0.1", 24546  # TODO: get temp free ports
+            server_address = "127.0.0.1", 0
         if client_address is None:
             client_address = "127.0.0.1", 0
 
@@ -306,11 +306,18 @@ class TestRTPClient:
         )
         client_address = client.local_addr
         server = MockRTPServer(
-            server_packets, server_address, client_address, send_delay=2e-3
+            server_packets,
+            server_address,
+            client_address,
+            send_delay=2e-3,
+            pre_bind=True,
         )
+        client.remote_addr = server.socket.getsockname()
         with client, server:
             for packet in client_packets:
                 client.write(packet.serialize())
+                if client.errors:
+                    raise client.errors[0]
                 time.sleep(3e-3)
             time.sleep(1e-1)  # wait for the last packets to be sent
             server.send_thread.join()

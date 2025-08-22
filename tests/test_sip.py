@@ -425,9 +425,9 @@ class TestSIPClient:
         default_response_timeout=2e-1,
     ):
         if server_address is None:
-            server_address = "127.0.0.1", 5060
+            server_address = "127.0.0.1", 0
         if client_address is None:
-            client_address = "127.0.0.1", 15060
+            client_address = "127.0.0.1", 0
 
         server = MockSIPServer(
             iter(server_packets),
@@ -435,7 +435,9 @@ class TestSIPClient:
             client_address,
             send_delay=1e-2,
             wait_recv_timeout=wait_recv_timeout,
+            pre_bind=True,
         )
+        server_address = server.socket.getsockname()
         client = SIPClient(
             call_handler_factory=lambda call: TestCallHandler(),  # noqa: ARG005
             username="alice",
@@ -448,7 +450,9 @@ class TestSIPClient:
             register_expires=register_expires,
             default_response_timeout=default_response_timeout,
             keep_alive_interval=None,  # disable keep-alive
+            pre_bind=True,
         )
+        server.client_address = client.local_addr
 
         yield server, client
 

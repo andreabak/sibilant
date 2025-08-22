@@ -306,6 +306,9 @@ class MockServer(ABC, Generic[_PT]):
         client_address,
         send_delay=1e-6,
         recv_delay=1e-6,
+        *,
+        pre_bind=False,
+        ready=True,
     ):
         self.packets_iterator: Iterator[_PT] = packets_iterator
         self.server_address = server_address
@@ -314,15 +317,25 @@ class MockServer(ABC, Generic[_PT]):
         self.recv_delay = recv_delay
 
         self.socket = None
+        if pre_bind:
+            self.socket = self._create_socket()
         self.send_thread = None
         self.recv_thread = None
+        self.ready_event = threading.Event()
+        if ready:
+            self.ready_event.set()
         self.stop_event = threading.Event()
         self.error = None
 
+    def _create_socket(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        sock.bind(self.server_address)
+        return sock
+
     def start(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.setblocking(False)
-        self.socket.bind(self.server_address)
+        if self.socket is None:
+            self.socket = self._create_socket()
 
         self.send_thread = threading.Thread(
             target=self._run_send, daemon=True, name="MockServer._run_send"
@@ -343,6 +356,7 @@ class MockServer(ABC, Generic[_PT]):
         """Send a packet to the client."""
 
     def _run_send(self):
+        self.ready_event.wait(timeout=30)
         while not self.stop_event.is_set():
             try:
                 packet: _PT = next(self.packets_iterator)

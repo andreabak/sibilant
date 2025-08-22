@@ -716,6 +716,17 @@ def time_cache(
     return decorator
 
 
+def is_socket_bound(sock: socket.socket) -> bool:
+    """Check if a socket is bound to a local address."""
+    if sock.family not in {socket.AF_INET, socket.AF_INET6}:
+        raise TypeError(f"Unsupported socket family: {sock.family}")
+    try:
+        bind_addr = sock.getsockname()
+        return bool(bind_addr[1])  # if port is 0 then it's not bound
+    except OSError:
+        return False
+
+
 @time_cache(expiry=60.0)
 def get_public_ip() -> str:
     """Get the public IP address of the current machine."""

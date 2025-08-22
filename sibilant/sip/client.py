@@ -52,7 +52,7 @@ from sibilant.exceptions import (
     SIPUnsupportedError,
     SIPUnsupportedVersion,
 )
-from sibilant.helpers import SupportsStr, get_external_ip_for_dest
+from sibilant.helpers import SupportsStr, get_external_ip_for_dest, is_socket_bound
 from sibilant.structures import SIPURI, SIPAddress
 
 from . import headers as hdr
@@ -1501,6 +1501,7 @@ class SIPClient:  # noqa: PLR0904
         domain: str | None = None,
         local_host: str = "0.0.0.0",
         local_port: int = 0,
+        pre_bind: bool = False,
         register_attempts: int = 5,
         register_timeout: float = 30.0,
         register_expires: int = 3600,
@@ -1556,6 +1557,8 @@ class SIPClient:  # noqa: PLR0904
 
         self._socket: socket.socket | None = None
         self._socket_lock: threading.Lock = threading.Lock()
+        if pre_bind:
+            self._setup_socket()
 
         self._registered: bool = False
         self._recv_thread: threading.Thread | None = None
@@ -1731,20 +1734,25 @@ class SIPClient:  # noqa: PLR0904
         else:
             del self._dialogs[call_id]
 
+    def _setup_socket(self) -> None:
+        if self._socket is not None:
+            self._socket.close()
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        self._socket.setblocking(False)
+        self._socket.bind(self._local_addr)
+        self._local_addr = self._socket.getsockname()
+
     def start(self) -> None:
         """Start the SIP client, registering to the SIP server."""
         try:
-            if self._socket is not None:
+            if self._event_loop_thread.is_alive():
                 raise RuntimeError("SIP client already started")
 
             self._closed = False
 
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024
-            )
-            self._socket.setblocking(False)
-            self._socket.bind(self._local_addr)
+            if self._socket is None or not is_socket_bound(self._socket):
+                self._setup_socket()
 
             # TODO: name threads
             self._recv_thread = threading.Thread(
