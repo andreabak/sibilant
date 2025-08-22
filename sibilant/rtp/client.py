@@ -10,15 +10,13 @@ import socket
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Collection, Mapping
 from io import RawIOBase
 from types import MappingProxyType, TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Collection,
     Literal,
-    Mapping,
     NamedTuple,
 )
 
@@ -350,12 +348,12 @@ class RTPStreamBuffer(RawIOBase):
     def _generate_next_dtmf_packets(
         self, defaults: Mapping[str, Any], duration_increase: int
     ) -> list[RTPPacket]:
-        assert (
-            self._event_profile is not None
-        ), "can't generate DTMF without an event profile"
-        assert (
-            self._events_active or self._events_codes_pending
-        ), "no dtmf active or pending"
+        assert self._event_profile is not None, (
+            "can't generate DTMF without an event profile"
+        )
+        assert self._events_active or self._events_codes_pending, (
+            "no dtmf active or pending"
+        )
 
         packets_to_send = []
         # get the first active or pending event if multiple
@@ -729,7 +727,6 @@ class RTPClient:
         self._recv_streams: dict[int, RTPStreamBuffer] = {}
         self._send_stream: RTPStreamBuffer = self._create_send_stream()
 
-        # FIXME: using two sockets doesn't seem to make a difference, refactor into one?
         self._socket: socket.socket | None = None
 
         if pre_bind:
@@ -738,7 +735,9 @@ class RTPClient:
             self._local_addr = self._socket.getsockname()
 
         self._recv_thread: threading.Thread | None = None
+        self._recv_error: BaseException | None = None
         self._send_thread: threading.Thread | None = None
+        self._send_error: BaseException | None = None
         self._last_send_time_ns: int | None = None
 
         self.dtmf_events_callback: Callable[[DTMFCode], None] | None = (
@@ -829,16 +828,34 @@ class RTPClient:
         return self._send_stats
 
     @property
+    def can_recv(self) -> bool:
+        """True if the client receive thread is alive (i.e. can receive packets)."""
+        return self._recv_thread is not None and self._recv_thread.is_alive()
+
+    @property
+    def can_send(self) -> bool:
+        """True if the client send thread is alive (i.e. can send packets)."""
+        return self._send_thread is not None and self._send_thread.is_alive()
+
+    @property
     def closed(self) -> bool:
         """Returns True if the client is closed. (i.e. both send and recv threads are stopped)."""
-        return (self._recv_thread is None or not self._recv_thread.is_alive()) and (
-            self._send_thread is None or not self._send_thread.is_alive()
-        )
+        return not self.can_recv and not self.can_send
+
+    @property
+    def errors(self) -> list[BaseException] | None:
+        """Returns a list of errors if the client is in an error state."""
+        errors: list[BaseException] = []
+        if self._recv_error is not None:
+            errors.append(self._recv_error)
+        if self._send_error is not None:
+            errors.append(self._send_error)
+        return errors or None
 
     def _create_socket(self) -> socket.socket:
-        _socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
-        _socket.setblocking(False)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
+        sock.setblocking(False)
 
         attempt: int = 0
         random_port: bool = self._local_addr[1] == 0
@@ -849,7 +866,7 @@ class RTPClient:
                     random.randint(*DEFAULT_RTP_PORT_RANGE) // 2 * 2,
                 )
             try:
-                _socket.bind(self._local_addr)
+                sock.bind(self._local_addr)
                 break
             except OSError as e:
                 if random_port and e.errno == errno.EADDRINUSE:
@@ -863,7 +880,7 @@ class RTPClient:
                 else:
                     raise
 
-        return _socket
+        return sock
 
     def _create_recv_stream(self) -> RTPStreamBuffer:
         return RTPStreamBuffer(mode="w", event_profiles=self.event_profiles)
@@ -891,10 +908,12 @@ class RTPClient:
             target=self._recv_loop,
             name=f"{self.__class__.__name__}._recv_loop-{id(self)}",
         )
+        self._recv_error = None
         self._send_thread = threading.Thread(
             target=self._send_loop,
             name=f"{self.__class__.__name__}._send_loop-{id(self)}",
         )
+        self._send_error = None
 
         self._recv_thread.start()
         self._send_thread.start()
@@ -936,7 +955,7 @@ class RTPClient:
             packet: RTPPacket | None = None
             try:
                 data, _addr = self._socket.recvfrom(8192)
-            except (socket.timeout, BlockingIOError):
+            except (TimeoutError, BlockingIOError):
                 pass
             else:
                 try:
@@ -944,6 +963,11 @@ class RTPClient:
 
                 except RTPParseError as e:
                     _logger.debug(f"Error parsing RTP packet: {e}")
+
+                except Exception as e:
+                    _logger.exception("Error while receiving RTP packet")
+                    self._recv_error = e
+                    raise
 
             end_time_ns: int = time.perf_counter_ns()
             if packet is not None:
@@ -1023,10 +1047,11 @@ class RTPClient:
             for packet in packets:
                 try:
                     self._socket.sendto(packet.serialize(), self._remote_addr)
-                except Exception:
+                except Exception as e:
                     _logger.exception(
                         f"Error sending RTP packet to {self._remote_addr}"
                     )
+                    self._send_error = e
                     raise
                 packets_max_duration = max(packets_max_duration, packet.duration)
 

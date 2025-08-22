@@ -1,10 +1,10 @@
 default_language_version:
-  python: python3.8
+  python: python3.12
 exclude: ^(build|dist|.*\.egg(-info)?|\.github)
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
       - id: check-ast
@@ -25,8 +25,6 @@ repos:
         exclude: ^(modules)
       - id: end-of-file-fixer
       - id: fix-byte-order-marker
-      - id: fix-encoding-pragma
-        args: [ "--remove" ]
       - id: mixed-line-ending
         args: [ "--fix=lf" ]
       - id: name-tests-test
@@ -34,7 +32,7 @@ repos:
       - id: requirements-txt-fixer
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.13
+    rev: v0.12.9
     hooks:
       - id: ruff-format
       - id: ruff
@@ -52,7 +50,7 @@ repos:
           - --exit-zero
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
+    rev: v1.17.1
     hooks:
       - id: mypy
         exclude: ^tests/
@@ -63,7 +61,7 @@ repos:
           - numpy
 
   - repo: https://github.com/Lucas-C/pre-commit-hooks-safety
-    rev: v1.3.2
+    rev: v1.4.2
     hooks:
       - id: python-safety-dependencies-check
         files: requirements.*\.txt

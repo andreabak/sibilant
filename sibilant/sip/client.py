@@ -16,11 +16,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import replace as dataclass_replace
-from functools import partial
-from types import MappingProxyType, TracebackType
-from typing import (
-    Any,
+from collections.abc import (
     AsyncGenerator,
     Awaitable,
     Callable,
@@ -28,13 +24,19 @@ from typing import (
     Coroutine,
     Mapping,
     MutableMapping,
-    Protocol,
     Sequence,
+)
+from dataclasses import replace as dataclass_replace
+from functools import partial
+from types import MappingProxyType, TracebackType
+from typing import (
+    Any,
+    Protocol,
     TypeVar,
     runtime_checkable,
 )
 
-from typing_extensions import Self, override
+from typing_extensions import NamedTuple, Self, override
 
 import sibilant
 from sibilant import rtp, sdp
@@ -50,7 +52,7 @@ from sibilant.exceptions import (
     SIPUnsupportedError,
     SIPUnsupportedVersion,
 )
-from sibilant.helpers import SupportsStr, get_external_ip_for_dest
+from sibilant.helpers import SupportsStr, get_external_ip_for_dest, is_socket_bound
 from sibilant.structures import SIPURI, SIPAddress
 
 from . import headers as hdr
@@ -80,6 +82,79 @@ def generate_call_id(local_host: str, local_port: int | None = None) -> str:
 def generate_cseq() -> int:
     """Generate a random CSeq number for SIP requests."""
     return random.randrange(0, 2**15)
+
+
+class HashedAuth(NamedTuple):
+    """Computed hashed authentication results."""
+
+    username: str
+    realm: str
+    nonce: str
+    qop: str | None
+    nc: str | None
+    cnonce: str | None
+    uri: str
+    response: str
+    algorithm: str
+
+
+def compute_auth(
+    *,
+    realm: str,
+    nonce: str,
+    method: str,
+    qop: str | None,
+    login: str,
+    password: str,
+    auth_uri: SIPURI,
+    cnonce: str | None = None,
+    nc: int | None = None,
+) -> HashedAuth:
+    """
+    Generate hashed authentication params for Authorization headers.
+
+    :param realm: the realm value supplied by the server.
+    :param nonce: the nonce value supplied by the server.
+    :param method: the SIP CSeq method of the request.
+    :param qop: the quality of protection value supplied by the server, or None.
+    :param login: the username to authenticate.
+    :param password: the password for the username.
+    :param auth_uri: the SIPURI being authenticated.
+    :param cnonce: the client nonce to use, or None to generate one.
+    :param nc: the nonce count value, or None to use default 1.
+    :return: the generated authorization header.
+    """
+    if qop and qop not in {"auth", "auth-int"}:
+        raise NotImplementedError(f"Unsupported qop={qop} for authentication")
+    if nc is None and (qop or cnonce is not None):
+        raise ValueError("cnonce and nc must be set together")
+    nc_str = f"{nc:08}" if isinstance(nc, int) else str(nc)
+
+    def digest(s: str) -> str:
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    ha1 = digest(f"{login}:{realm}:{password}")
+    ha2 = digest(f"{method}:{auth_uri}")
+    if qop:  # assumes already validated
+        qop = "auth"  # TODO: add auth-int support
+        if not cnonce:
+            cnonce = random.getrandbits(32).to_bytes(4, "big").hex()
+        auth_response = digest(f"{ha1}:{nonce}:{nc_str}:{cnonce}:{qop}:{ha2}")
+    else:
+        cnonce = None
+        auth_response = digest(f"{ha1}:{nonce}:{ha2}")
+
+    return HashedAuth(
+        username=login,
+        realm=realm,
+        nonce=nonce,
+        qop=qop,
+        nc=nc_str,
+        cnonce=cnonce,
+        uri=str(auth_uri),
+        response=auth_response,
+        algorithm="MD5",
+    )
 
 
 async def discard_statuses(
@@ -469,9 +544,7 @@ class SIPDialog(ABC):
             try:
                 response = await self._wait_for_message(self._client.register_timeout)
             except asyncio.TimeoutError:
-                raise SIPTimeout(  # noqa: B904
-                    f"Timed out waiting for {method} response"
-                )
+                raise SIPTimeout(f"Timed out waiting for {method} response")
 
             if not isinstance(response, SIPResponse):
                 raise SIPBadResponse(f"Unexpected response for {method}: {response!r}")
@@ -858,7 +931,7 @@ class SIPCall(SIPDialog):
         try:
             yield
         # TODO: better handle other exceptions, like bad request, and send appropriate response
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._state = CallState.FAILED
             self._failure_exception = exc
             self._close()
@@ -1428,6 +1501,7 @@ class SIPClient:  # noqa: PLR0904
         domain: str | None = None,
         local_host: str = "0.0.0.0",
         local_port: int = 0,
+        pre_bind: bool = False,
         register_attempts: int = 5,
         register_timeout: float = 30.0,
         register_expires: int = 3600,
@@ -1483,6 +1557,8 @@ class SIPClient:  # noqa: PLR0904
 
         self._socket: socket.socket | None = None
         self._socket_lock: threading.Lock = threading.Lock()
+        if pre_bind:
+            self._setup_socket()
 
         self._registered: bool = False
         self._recv_thread: threading.Thread | None = None
@@ -1658,20 +1734,25 @@ class SIPClient:  # noqa: PLR0904
         else:
             del self._dialogs[call_id]
 
+    def _setup_socket(self) -> None:
+        if self._socket is not None:
+            self._socket.close()
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        self._socket.setblocking(False)
+        self._socket.bind(self._local_addr)
+        self._local_addr = self._socket.getsockname()
+
     def start(self) -> None:
         """Start the SIP client, registering to the SIP server."""
         try:
-            if self._socket is not None:
+            if self._event_loop_thread.is_alive():
                 raise RuntimeError("SIP client already started")
 
             self._closed = False
 
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024
-            )
-            self._socket.setblocking(False)
-            self._socket.bind(self._local_addr)
+            if self._socket is None or not is_socket_bound(self._socket):
+                self._setup_socket()
 
             # TODO: name threads
             self._recv_thread = threading.Thread(
@@ -1796,7 +1877,7 @@ class SIPClient:  # noqa: PLR0904
         # ):
         #     raise exception
         if _logger.getEffectiveLevel() <= logging.DEBUG:
-            _logger.exception(message, exc_info=exception)
+            _logger.exception(message, exc_info=exception)  # noqa: LOG004
         else:
             _logger.error(message)
 
@@ -1805,7 +1886,11 @@ class SIPClient:  # noqa: PLR0904
             raise RuntimeError("Cannot track future from another event loop")
         self._pending_futures.append(future)
 
-    def _schedule(self, coro: Awaitable) -> concurrent.futures.Future:
+    _rT = TypeVar("_rT")  # noqa: N815
+
+    def _schedule(
+        self, coro: Coroutine[Any, Any, _rT]
+    ) -> concurrent.futures.Future[_rT]:
         future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
         self._track_future(future)
         return future
@@ -1819,7 +1904,7 @@ class SIPClient:  # noqa: PLR0904
                 try:
                     data, addr = self._socket.recvfrom(8192)
                     # TODO: assert addr == self._server_addr?
-                except (socket.timeout, BlockingIOError, ConnectionResetError):
+                except (TimeoutError, BlockingIOError, ConnectionResetError):
                     pass
                 else:
                     msg = SIPMessage.parse(data, origin=addr)
@@ -2311,42 +2396,25 @@ class SIPClient:  # noqa: PLR0904
             raise SIPBadResponse(f"No nonce in {authenticate_hdr_name} header")
         if "CSeq" not in response.headers:
             raise SIPBadResponse("No CSeq header in response")
-        method = response.headers["CSeq"].method
+        method = response.headers["CSeq"].method.name
         qop = authenticate_hdr.qop
-        if qop and qop not in {"auth", "auth-int"}:
-            raise NotImplementedError(
-                f"Unsupported qop={qop} in {authenticate_hdr_name} header"
-            )
-        if nc is None and (qop or cnonce is not None):
-            raise ValueError("cnonce and nc must be set together")
-        nc_str = f"{nc:08}" if isinstance(nc, int) else str(nc)
 
-        def digest(s: str) -> str:
-            return hashlib.md5(s.encode("utf-8")).hexdigest()
-
-        ha1 = digest(f"{self._login}:{realm}:{self._password}")
-        ha2 = digest(f"{method}:{self._auth_uri}")
-        if qop:  # assumes already validated
-            qop = "auth"  # TODO: add auth-int support
-            if not cnonce:
-                cnonce = random.getrandbits(32).to_bytes(4, "big").hex()
-            auth_response = digest(f"{ha1}:{nonce}:{nc_str}:{cnonce}:{qop}:{ha2}")
-        else:
-            cnonce = None
-            auth_response = digest(f"{ha1}:{nonce}:{ha2}")
-
-        hdr_cls = hdr.ProxyAuthorizationHeader if is_proxy else hdr.AuthorizationHeader
-        return hdr_cls(
-            username=self._login,
+        hashed_auth = compute_auth(
             realm=realm,
             nonce=nonce,
+            method=method,
             qop=qop,
-            nc=nc_str,
+            login=self._login,
+            password=self._password,
+            auth_uri=self._auth_uri,
             cnonce=cnonce,
-            uri=str(self._auth_uri),
-            response=auth_response,
-            algorithm="MD5",
+            nc=nc,
         )
+
+        if is_proxy:
+            return hdr.ProxyAuthorizationHeader(**hashed_auth._asdict())  # noqa: SLF001
+        else:
+            return hdr.AuthorizationHeader(**hashed_auth._asdict())  # noqa: SLF001
 
     def generate_capabilities_headers(self) -> list[hdr.Header]:
         """Generate the headers for the OPTIONS request."""

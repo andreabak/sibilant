@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import enum
-from typing import TYPE_CHECKING, ClassVar, Literal, Mapping, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias, cast
 
 import numpy as np
 from cbitstruct import CompiledFormat
-from typing_extensions import Self, TypeAlias
+from typing_extensions import Self
 
 from sibilant.helpers import ParseableSerializableRaw, slots_dataclass
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from numpy.typing import NDArray
 
 
@@ -109,14 +111,14 @@ class DTMFCode(enum.IntEnum):
             elif char == "#":
                 return cls.POUND
             elif char in {"A", "B", "C", "D"}:
-                return cast(DTMFCode, getattr(cls, char))
+                return cast("DTMFCode", getattr(cls, char))
             else:
                 try:
                     int(char)
                 except ValueError:
                     pass
                 else:
-                    return cast(DTMFCode, getattr(cls, f"DIGIT_{char}"))
+                    return cast("DTMFCode", getattr(cls, f"DIGIT_{char}"))
         raise ValueError(f"Invalid DTMF code string character: {char}")
 
 
@@ -185,7 +187,7 @@ class DTMFEvent(ParseableSerializableRaw):
 
     def serialize(self) -> bytes:  # noqa: D102
         return cast(
-            bytes,
+            "bytes",
             self._format_u32.pack(
                 self.event_code.value, self.end_of_event, 0, -self.volume, self.duration
             ),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from abc import ABC
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Any, MutableMapping
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self, override
 
@@ -33,31 +33,33 @@ from .time import SDPTime  # noqa
 
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
     from sibilant.rtp import MediaFlowType
 
 
 __all__ = [
-    "SDPSessionFields",
-    "SDPSessionVersion",
-    "SDPSessionOrigin",
-    "SDPSessionName",
-    "SDPSessionInformation",
-    "SDPSessionURI",
-    "SDPSessionEmail",
-    "SDPSessionPhone",
-    "SDPSessionConnection",
-    "SDPSessionBandwidth",
-    "SDPSessionTimezoneAdjustment",
-    "SDPSessionTimezone",
-    "SDPSessionEncryption",
-    "SDPSessionAttribute",
-    "UnknownSessionAttribute",
-    "RecvOnlySessionFlag",
-    "SendRecvSessionFlag",
-    "SendOnlySessionFlag",
     "InactiveSessionFlag",
-    "SDPSessionAttributeField",
+    "RecvOnlySessionFlag",
     "SDPSession",
+    "SDPSessionAttribute",
+    "SDPSessionAttributeField",
+    "SDPSessionBandwidth",
+    "SDPSessionConnection",
+    "SDPSessionEmail",
+    "SDPSessionEncryption",
+    "SDPSessionFields",
+    "SDPSessionInformation",
+    "SDPSessionName",
+    "SDPSessionOrigin",
+    "SDPSessionPhone",
+    "SDPSessionTimezone",
+    "SDPSessionTimezoneAdjustment",
+    "SDPSessionURI",
+    "SDPSessionVersion",
+    "SendOnlySessionFlag",
+    "SendRecvSessionFlag",
+    "UnknownSessionAttribute",
 ]
 
 
@@ -296,7 +298,9 @@ class SDPSessionTimezone(SDPSessionFields, FieldsParserSerializer):
             )
         adjustments = [
             SDPSessionTimezoneAdjustment.from_raw_value(f"{adjustment_time} {offset}")
-            for adjustment_time, offset in zip(split_values[::2], split_values[1::2])
+            for adjustment_time, offset in zip(
+                split_values[::2], split_values[1::2], strict=True
+            )
         ]
         return dict(adjustments=adjustments)
 

@@ -10,9 +10,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Mapping,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -35,41 +33,43 @@ from sibilant.structures import SIPAddress
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .messages import SIPMethod
 
 
 __all__ = [
-    "Header",
-    "StrHeader",
-    "UnknownHeader",
-    "IntHeader",
-    "ListHeader",
-    "MultipleValuesHeader",
-    "ViaEntry",
-    "ViaHeader",
-    "FromToHeader",
-    "FromHeader",
-    "ToHeader",
+    "AllowHeader",
+    "AuthorizationHeader",
+    "CSeqHeader",
+    "CallIDHeader",
     "Contact",
     "ContactHeader",
-    "RouteHeader",
-    "RecordRouteHeader",
-    "CallIDHeader",
-    "CSeqHeader",
-    "AllowHeader",
-    "SupportedHeader",
-    "ExpiresHeader",
-    "ContentTypeHeader",
     "ContentLengthHeader",
+    "ContentTypeHeader",
+    "ExpiresHeader",
+    "FromHeader",
+    "FromToHeader",
+    "Header",
+    "Headers",
+    "IntHeader",
+    "ListHeader",
     "MaxForwardsHeader",
-    "UserAgentHeader",
-    "AuthorizationHeader",
-    "WWWAuthenticateHeader",
-    "ProxyAuthorizationHeader",
-    "ProxyAuthenticateHeader",
+    "MultipleValuesHeader",
     "PAssertedIdentityHeader",
     "PPreferredIdentityHeader",
-    "Headers",
+    "ProxyAuthenticateHeader",
+    "ProxyAuthorizationHeader",
+    "RecordRouteHeader",
+    "RouteHeader",
+    "StrHeader",
+    "SupportedHeader",
+    "ToHeader",
+    "UnknownHeader",
+    "UserAgentHeader",
+    "ViaEntry",
+    "ViaHeader",
+    "WWWAuthenticateHeader",
 ]
 
 
@@ -77,7 +77,7 @@ _H = TypeVar("_H", bound="Header")
 
 
 class Header(
-    Registry[Union[str, DefaultType], "Header"],
+    Registry[str | DefaultType, "Header"],
     ABC,
     registry=True,
     registry_attr="_name",
@@ -132,7 +132,7 @@ class Header(
             value = ListHeader._separator.join(values)  # noqa: SLF001
         else:
             value = values[0]
-        return cast(Self, header_cls.from_raw_value(header, value, previous_headers))
+        return cast("Self", header_cls.from_raw_value(header, value, previous_headers))
 
     @classmethod
     @abstractmethod
@@ -192,7 +192,7 @@ class IntHeader(IntValueMixin, Header, ABC):
         return cls(**cls.parse_raw_value(value))
 
 
-_ST = TypeVar("_ST", bound=Union[SupportsStr, ParseableSerializable])
+_ST = TypeVar("_ST", bound=SupportsStr | ParseableSerializable)
 
 
 class ListHeader(ListValueMixin[_ST], Header, ABC):
@@ -479,7 +479,7 @@ class CSeqHeader(Header):
         from .messages import SIPMethod  # noqa: PLC0415
 
         sequence, method_raw = value.split(maxsplit=1)
-        method = SIPMethod(method_raw)
+        method = SIPMethod.match_value(method_raw)
         return cls(sequence=int(sequence), method=method)
 
     def serialize(self) -> str:  # noqa: D102
@@ -712,7 +712,7 @@ class Headers(CaseInsensitiveDict[_H]):
             headers_values[header].append(raw_value)
 
         for header, raw_values in headers_values.items():
-            headers[header] = cast(_H, Header.parse(header, raw_values, headers))
+            headers[header] = cast("_H", Header.parse(header, raw_values, headers))
 
         return headers
 

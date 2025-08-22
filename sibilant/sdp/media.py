@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass, field as dataclass_field
-from typing import Sequence
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self, override
 
@@ -31,27 +31,31 @@ from .common import (
 )
 
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
 __all__ = [
+    "FMTPAttribute",
+    "InactiveMediaFlag",
+    "MaxPTimeAttribute",
+    "PTimeAttribute",
+    "RTPMapAttribute",
+    "RecvOnlyMediaFlag",
+    "SDPMedia",
+    "SDPMediaAttribute",
+    "SDPMediaAttributeField",
+    "SDPMediaBandwidth",
+    "SDPMediaConnection",
+    "SDPMediaEncryption",
     "SDPMediaFields",
     "SDPMediaMedia",
     "SDPMediaTitle",
-    "SDPMediaConnection",
-    "SDPMediaBandwidth",
-    "SDPMediaEncryption",
-    "SDPMediaAttribute",
-    "UnknownMediaAttribute",
-    "RecvOnlyMediaFlag",
-    "SendRecvMediaFlag",
     "SendOnlyMediaFlag",
-    "InactiveMediaFlag",
-    "PTimeAttribute",
-    "MaxPTimeAttribute",
-    "RTPMapAttribute",
-    "FMTPAttribute",
-    "SDPMediaAttributeField",
+    "SendRecvMediaFlag",
+    "UnknownMediaAttribute",
     "get_media_flow_attribute",
     "get_media_flow_type",
-    "SDPMedia",
 ]
 
 

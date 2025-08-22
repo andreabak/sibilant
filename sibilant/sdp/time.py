@@ -14,10 +14,10 @@ from .common import SDPField, SDPSection
 
 
 __all__ = [
-    "SDPTimeFields",
-    "SDPTimeTime",
-    "SDPTimeRepeat",
     "SDPTime",
+    "SDPTimeFields",
+    "SDPTimeRepeat",
+    "SDPTimeTime",
 ]
 
 

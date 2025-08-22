@@ -24,7 +24,9 @@ PUBLIC_IP_RESOLVERS: list[tuple[str, _typing.Callable[[str], str | None] | None]
     ("http://icanhazip.com/", None),
     (
         "http://checkip.dyndns.org/",
-        lambda body: (m := _re.search(r"ip address: ?(.*?)\b", body, flags=_re.I))
+        lambda body: (
+            m := _re.search(r"ip address: ?(.*?)\b", body, flags=_re.IGNORECASE)
+        )
         and m.group(1),
     ),
     (

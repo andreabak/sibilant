@@ -9,7 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, Iterator, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import dpkt
 import pytest
@@ -17,6 +17,7 @@ from dpkt.utils import inet_to_str
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from types import TracebackType
 
 
@@ -151,7 +152,7 @@ def voip_calls():  # noqa: PLR0914
                     if match := re.search(
                         r"^c *= *IN +IP4 +\b(\d+\.\d+\.\d+\.\d+)\b",
                         data.decode(),  # noqa: B023
-                        re.M | re.I,
+                        re.MULTILINE | re.IGNORECASE,
                     ):
                         aux_src_str = match.group(1)
 
@@ -161,15 +162,27 @@ def voip_calls():  # noqa: PLR0914
                     if first_line.startswith(b"REGISTER"):
                         dest = Dest.SERVER
                     elif first_line.startswith(b"INVITE"):
-                        if re.search(rf"^Via:.*{src_str}", data.decode(), re.M | re.I):
+                        if re.search(
+                            rf"^Via:.*{src_str}",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.SERVER
                         else:
                             dest = Dest.CLIENT
                         extract_aux_ip()
                     elif first_line.startswith(b"SIP/2.0"):
-                        if re.search(r"^CSeq:.*REGISTER", data.decode(), re.M | re.I):
+                        if re.search(
+                            r"^CSeq:.*REGISTER",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.CLIENT
-                        elif re.search(r"^CSeq:.*INVITE", data.decode(), re.M | re.I):
+                        elif re.search(
+                            r"^CSeq:.*INVITE",
+                            data.decode(),
+                            re.MULTILINE | re.IGNORECASE,
+                        ):
                             dest = Dest.SERVER
                             extract_aux_ip()
 
@@ -222,7 +235,7 @@ def voip_calls():  # noqa: PLR0914
     return tuple(calls)
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets(voip_calls):
     """Return a list of SIP packets from all the calls."""
     return [
@@ -233,31 +246,31 @@ def sip_packets(voip_calls):
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_requests(sip_packets):
     """Return a list of SIP requests from all the calls."""
     return [packet for packet in sip_packets if not packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_responses(sip_packets):
     """Return a list of SIP responses from all the calls."""
     return [packet for packet in sip_packets if packet.data.startswith(b"SIP/2.0")]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets_from_client(sip_packets):
     """Return a list of SIP packets from the client."""
     return [packet for packet in sip_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_packets_from_server(sip_packets):
     """Return a list of SIP packets from the server."""
     return [packet for packet in sip_packets if packet.dest == Dest.CLIENT]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets(voip_calls):
     """Return a list of RTP packets from all the calls."""
     return [
@@ -268,13 +281,13 @@ def rtp_packets(voip_calls):
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets_from_client(rtp_packets):
     """Return a list of RTP packets from the client."""
     return [packet for packet in rtp_packets if packet.dest == Dest.SERVER]
 
 
-@pytest.fixture()
+@pytest.fixture
 def rtp_packets_from_server(rtp_packets):
     """Return a list of RTP packets from the server."""
     return [packet for packet in rtp_packets if packet.dest == Dest.CLIENT]
@@ -293,6 +306,9 @@ class MockServer(ABC, Generic[_PT]):
         client_address,
         send_delay=1e-6,
         recv_delay=1e-6,
+        *,
+        pre_bind=False,
+        ready=True,
     ):
         self.packets_iterator: Iterator[_PT] = packets_iterator
         self.server_address = server_address
@@ -301,15 +317,25 @@ class MockServer(ABC, Generic[_PT]):
         self.recv_delay = recv_delay
 
         self.socket = None
+        if pre_bind:
+            self.socket = self._create_socket()
         self.send_thread = None
         self.recv_thread = None
+        self.ready_event = threading.Event()
+        if ready:
+            self.ready_event.set()
         self.stop_event = threading.Event()
         self.error = None
 
+    def _create_socket(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setblocking(False)
+        sock.bind(self.server_address)
+        return sock
+
     def start(self):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.setblocking(False)
-        self.socket.bind(self.server_address)
+        if self.socket is None:
+            self.socket = self._create_socket()
 
         self.send_thread = threading.Thread(
             target=self._run_send, daemon=True, name="MockServer._run_send"
@@ -330,6 +356,7 @@ class MockServer(ABC, Generic[_PT]):
         """Send a packet to the client."""
 
     def _run_send(self):
+        self.ready_event.wait(timeout=30)
         while not self.stop_event.is_set():
             try:
                 packet: _PT = next(self.packets_iterator)

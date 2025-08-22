@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
-import socket
 import time
 import traceback
 from collections import defaultdict, deque, namedtuple
 from contextlib import contextmanager, nullcontext
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
@@ -16,6 +15,7 @@ from sibilant.exceptions import SIPException
 from sibilant.sip import (
     CallHandler,
     CallState,
+    HashedAuth,
     Header,
     Headers,
     MultipleValuesHeader,
@@ -26,9 +26,15 @@ from sibilant.sip import (
     SIPRegistration,
     SIPRequest,
     SIPResponse,
+    compute_auth,
 )
+from sibilant.structures import SIPURI
 
 from .conftest import Dest, MockServer
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 _logger = logging.getLogger(__name__)
@@ -66,9 +72,9 @@ class TestHeaders:
             else:
                 if not issubclass(header_cls, MultipleValuesHeader):
                     wrong_classes.append(header_name)
-        assert (
-            not wrong_classes
-        ), "Headers with multiple values should be MultipleValuesHeader"
+        assert not wrong_classes, (
+            "Headers with multiple values should be MultipleValuesHeader"
+        )
 
 
 class TestSIPMessages:
@@ -89,9 +95,9 @@ class TestSIPMessages:
                 packet.data.decode().split("\r\n\r\n", 1)[0].split("\r\n")[1:]
             )
             raw_headers = dict(tuple(line.split(": ", 1)) for line in raw_headers_lines)
-            assert list(headers.keys()) == list(
-                raw_headers.keys()
-            ), "Headers should be in the same order as the original message"
+            assert list(headers.keys()) == list(raw_headers.keys()), (
+                "Headers should be in the same order as the original message"
+            )
 
             def clean(s):
                 """Clean headers for comparison."""
@@ -103,26 +109,29 @@ class TestSIPMessages:
                 s = re.sub(r"\s*,\s*", ",", s)
                 # make all bool values uppercase
                 s = re.sub(
-                    r"\b(false|true)\b", lambda m: m.group(1).upper(), s, flags=re.I
+                    r"\b(false|true)\b",
+                    lambda m: m.group(1).upper(),
+                    s,
+                    flags=re.IGNORECASE,
                 )
                 # remove unnecessary quotes from nc=
-                s = re.sub(r'\bnc="(\w+)"', r"nc=\1", s, flags=re.I)
+                s = re.sub(r'\bnc="(\w+)"', r"nc=\1", s, flags=re.IGNORECASE)
                 # add quotes when missing in display name before <sip:...>
                 s = re.sub(r"(\w+) *(?=<sip:)", r'"\1" ', s)
                 # strip leading and trailing whitespace in each line
-                s = re.sub(r"^ +| +$", "", s, flags=re.M)
+                s = re.sub(r"^ +| +$", "", s, flags=re.MULTILINE)
                 return s.strip()
 
-            assert clean(str(headers)) == clean(
-                "\r\n".join(raw_headers_lines)
-            ), "Headers should serialize to the same string as the original message"
+            assert clean(str(headers)) == clean("\r\n".join(raw_headers_lines)), (
+                "Headers should serialize to the same string as the original message"
+            )
 
             previous_headers = Headers()
             for header in headers.values():
                 hdr_cls_name = header.__class__.__name__
-                assert (
-                    header.name in headers
-                ), f"{hdr_cls_name}: header name should be in Headers map"
+                assert header.name in headers, (
+                    f"{hdr_cls_name}: header name should be in Headers map"
+                )
                 assert (  # noqa: PT018
                     header.name.upper() in headers and header.name.lower() in headers
                 ), f"{hdr_cls_name}: headers should be case-insensitive"
@@ -131,23 +140,80 @@ class TestSIPMessages:
                 rebuilt_header = Header.parse(
                     header.name, serialized_value, previous_headers
                 )
-                assert (
-                    rebuilt_header.serialize() == serialized_value
-                ), f"{hdr_cls_name}: value should serialize without loss"
-                assert str(rebuilt_header) == str(
-                    header
-                ), f"{hdr_cls_name}: entire header should serialize without loss"
-                assert (
-                    rebuilt_header == header
-                ), f"{hdr_cls_name}: should be able to be rebuilt and still match"
+                assert rebuilt_header.serialize() == serialized_value, (
+                    f"{hdr_cls_name}: value should serialize without loss"
+                )
+                assert str(rebuilt_header) == str(header), (
+                    f"{hdr_cls_name}: entire header should serialize without loss"
+                )
+                assert rebuilt_header == header, (
+                    f"{hdr_cls_name}: should be able to be rebuilt and still match"
+                )
 
                 previous_headers[header.name] = rebuilt_header
+
+
+class AuthParams(NamedTuple):
+    realm: str
+    nonce: str
+    method: str
+    qop: str | None
+    login: str
+    password: str
+    auth_uri: SIPURI
+    cnonce: str | None = None
+    nc: int | None = None
+
+
+@pytest.fixture
+def auth_samples() -> list[tuple[AuthParams, HashedAuth]]:
+    auth_responses = [
+        (
+            AuthParams(
+                realm="sip.twilio.com",
+                nonce="3KmK8fSJKaapgVlXobV26UmcL8Qq1WqRjl_UQX_Pmey2nmI_",
+                method="REGISTER",
+                qop="auth",
+                login="wa-bot-01",
+                password="HunterHunter2",
+                auth_uri=SIPURI.parse(
+                    "sip:wa-test.sip.frankfurt.twilio.com;transport=UDP"
+                ),
+                cnonce="a2d67228",
+                nc=14099,
+            ),
+            "3fa72cc5973eb4d986d7529503ae3b0c",
+        )
+    ]
+    return [
+        (
+            auth,
+            HashedAuth(
+                username=auth.login,
+                realm=auth.realm,
+                nonce=auth.nonce,
+                qop=auth.qop,
+                nc=f"{auth.nc:08}" if isinstance(auth.nc, int) else str(auth.nc),
+                cnonce=auth.cnonce,
+                uri=str(auth.auth_uri),
+                response=response,
+                algorithm="MD5",
+            ),
+        )
+        for auth, response in auth_responses
+    ]
+
+
+def test_auth_hash(auth_samples):
+    for auth, expected in auth_samples:
+        result = compute_auth(**auth._asdict())
+        assert result == expected
 
 
 PacketAndSIPMessage = namedtuple("PacketAndSIPMessage", ["packet", "message"])
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_transactions(sip_packets):
     """
     Return lists of packets and SIP messages, grouped by transaction.
@@ -173,7 +239,7 @@ def sip_transactions(sip_packets):
     return transactions
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_registrations(sip_transactions):
     """Return lists of SIP REGISTER transactions, grouped by transaction."""
     return {
@@ -183,7 +249,7 @@ def sip_registrations(sip_transactions):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def sip_invites(sip_transactions):
     """Return lists of SIP INVITE transactions, grouped by transaction."""
     return {
@@ -193,7 +259,7 @@ def sip_invites(sip_transactions):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def incoming_invites(sip_invites):
     """Return lists of incoming SIP INVITE transactions, grouped by transaction."""
     return {
@@ -203,7 +269,7 @@ def incoming_invites(sip_invites):
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def outgoing_invites(sip_invites):
     """Return lists of outgoing SIP INVITE transactions, grouped by transaction."""
     return {
@@ -261,7 +327,7 @@ class MockSIPServer(MockServer[PacketAndSIPMessage]):
     def recv(self):
         try:
             data, addr = self.socket.recvfrom(8192)
-        except (socket.timeout, BlockingIOError):
+        except (TimeoutError, BlockingIOError):
             pass
         else:
             if not data.strip():
@@ -320,15 +386,15 @@ def mute_caplog(caplog, mute, logger_name=None):
     return log_level_context
 
 
-@pytest.fixture()
+@pytest.fixture
 def _skip_register(monkeypatch):
-    async def mock_register(self):
+    async def mock_register(self):  # noqa: RUF029
         self._registered = True
 
     monkeypatch.setattr(SIPRegistration, "register", mock_register)
 
 
-@pytest.fixture()
+@pytest.fixture
 def _skip_deregister(monkeypatch):
     original__register_transaction = SIPRegistration._register_transaction
 
@@ -359,9 +425,9 @@ class TestSIPClient:
         default_response_timeout=2e-1,
     ):
         if server_address is None:
-            server_address = "127.0.0.1", 5060
+            server_address = "127.0.0.1", 0
         if client_address is None:
-            client_address = "127.0.0.1", 15060
+            client_address = "127.0.0.1", 0
 
         server = MockSIPServer(
             iter(server_packets),
@@ -369,7 +435,9 @@ class TestSIPClient:
             client_address,
             send_delay=1e-2,
             wait_recv_timeout=wait_recv_timeout,
+            pre_bind=True,
         )
+        server_address = server.socket.getsockname()
         client = SIPClient(
             call_handler_factory=lambda call: TestCallHandler(),  # noqa: ARG005
             username="alice",
@@ -382,7 +450,9 @@ class TestSIPClient:
             register_expires=register_expires,
             default_response_timeout=default_response_timeout,
             keep_alive_interval=None,  # disable keep-alive
+            pre_bind=True,
         )
+        server.client_address = client.local_addr
 
         yield server, client
 
@@ -395,9 +465,9 @@ class TestSIPClient:
                         time.sleep(1e-9)
                     _logger.debug("Stopping test")
 
-                    assert (
-                        expect_failure or client.registered
-                    ), "Client should be registered"
+                    assert expect_failure or client.registered, (
+                        "Client should be registered"
+                    )
 
                     raise StopIteration
 
@@ -460,9 +530,9 @@ class TestSIPClient:
                 assert not client._pending_futures, "expected client to be done"
                 assert server.sent_count, "at least one message should have been sent"
                 assert call, "expected at least one call to have started"
-                assert (
-                    call.state in expected_states
-                ), "call should be in expected states"
+                assert call.state in expected_states, (
+                    "call should be in expected states"
+                )
                 expected_sent_count = len([m for m in server_packets if m is not None])
                 assert server.sent_count == expected_sent_count
 

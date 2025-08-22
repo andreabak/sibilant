@@ -14,21 +14,25 @@ import types
 import urllib.request
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from collections.abc import MutableSequence
-from dataclasses import dataclass as _dtcls, is_dataclass
-from inspect import isabstract
-from typing import (
-    TYPE_CHECKING,
-    Any,
+from collections.abc import (
     Callable,
-    ClassVar,
-    Generic,
+    Hashable,
     Iterable,
     Iterator,
     Mapping,
     MutableMapping,
-    Pattern,
+    MutableSequence,
+)
+from dataclasses import dataclass as _dtcls, is_dataclass
+from inspect import isabstract
+from re import Pattern
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Generic,
     Protocol,
+    TypeAlias,
     TypeVar,
     Union,
     cast,
@@ -39,7 +43,7 @@ from typing import (
 )
 
 import numpy as np
-from typing_extensions import Self, TypeAlias, dataclass_transform
+from typing_extensions import Self, dataclass_transform
 
 from .constants import PUBLIC_IP_RESOLVERS
 
@@ -60,11 +64,8 @@ _dT = TypeVar("_dT")
 def slots_dataclass(*args: Any, **kwargs: Any) -> Callable[[_dT], _dT]:
     """Wrapper for dataclass decorator that adds slots if supported (py3.10+)."""
     # TODO: restore slots=True default once https://github.com/python/cpython/issues/91126 is fixed
-    if sys.version_info < (3, 10):
-        kwargs.pop("slots", None)
-    else:
-        kwargs.setdefault("slots", True)
-    return cast(Callable[[_dT], _dT], _dtcls(*args, **kwargs))
+    kwargs.setdefault("slots", True)
+    return cast("Callable[[_dT], _dT]", _dtcls(*args, **kwargs))
 
 
 @runtime_checkable
@@ -85,9 +86,32 @@ class FieldsEnumDatatype:
             "Must be overridden by getting the value from the field"
         )
 
+    def __str__(self) -> str:
+        return str(self.enum_value)
+
+
+class ValueMatchEnum(FieldsEnumDatatype, enum.Enum):
+    """Mixin to match enum members by a specified property value."""
+
+    _enum_value_map_: ClassVar[dict[Hashable, Self]]
+
+    @classmethod
+    def match_value(cls, value: Any) -> Self:
+        """Match a value to a member."""
+        if not hasattr(cls, "_enum_value_map_"):
+            cls._enum_value_map_ = {
+                cast("Self", member).enum_value: cast("Self", member)
+                for member in cls._member_map_.values()
+            }
+        if value in cls._member_map_:
+            return cast("Self", cls._member_map_[value])
+        if value in cls._enum_value_map_:  # type: ignore[operator]
+            return cast("Self", cls._enum_value_map_[value])  # type: ignore[index]
+        raise ValueError(f"Not a valid {cls.__qualname__} value: {value}")
+
 
 # noinspection PyTypeChecker
-class FieldsEnum(enum.Enum):
+class FieldsEnum(ValueMatchEnum):
     """
     Custom enum class that's tied to a dataclass type and wraps its objects as members
     and proxies their attributes.
@@ -104,12 +128,21 @@ class FieldsEnum(enum.Enum):
         cls_name = cls.__name__
         if getattr(cls, "__wrapped_type__", None) is None:
             raise TypeError(f"{cls_name} must define __wrapped_type__")
-        if not issubclass(cls.__wrapped_type__, FieldsEnumDatatype):
-            raise TypeError(
-                f"{cls_name}.__wrapped_type__ must be a subclass of {FieldsEnumDatatype.__name__}"
-            )
+
+    @classmethod
+    def _get_enum_value(cls, objs: Any) -> Any:
+        exc: BaseException | None = None
+        for src in objs:
+            try:
+                return src.enum_value
+            except (NotImplementedError, AttributeError) as exc:  # noqa: PERF203
+                exc = exc  # noqa: PLW0127
+        assert exc is not None
+        raise exc
 
     def __new__(cls, value: Any) -> Self:  # noqa: D102
+        if not isinstance(value, cls.__wrapped_type__) and isinstance(value, tuple):
+            value = cls.__wrapped_type__(*value)
         if not isinstance(value, cls.__wrapped_type__):
             raise TypeError(
                 f"Expected subclass of {cls.__wrapped_type__.__name__}, got {type(value)}"
@@ -121,17 +154,7 @@ class FieldsEnum(enum.Enum):
         obj = object.__new__(cls)
         obj._wrapped_value_ = value
 
-        exc = None
-        for src in (obj, value):
-            try:
-                enum_value = src.enum_value
-                break
-            except (NotImplementedError, AttributeError):
-                pass
-        else:
-            assert exc is not None
-            raise exc
-
+        enum_value = cls._get_enum_value((obj, value))
         obj._value_ = enum_value
         return obj
 
@@ -141,7 +164,7 @@ class FieldsEnum(enum.Enum):
     def _missing_(cls, value: Any) -> FieldsEnum | None:
         if isinstance(value, cls.__wrapped_type__):
             try:
-                return cls(value.enum_value)
+                return cls(cls._get_enum_value((value,)))
             except (ValueError, TypeError):
                 if not cls.__allow_unknown__:
                     raise
@@ -149,7 +172,7 @@ class FieldsEnum(enum.Enum):
         if not cls.__allow_unknown__:
             return None
 
-        obj = cast(FieldsEnum, cls.__new_member__(cls, value))
+        obj = cast("FieldsEnum", cls.__new_member__(cls, value))  # type: ignore[arg-type]
         obj._name_ = cls.__unknown_member_name__
         return obj
 
@@ -157,7 +180,7 @@ class FieldsEnum(enum.Enum):
         return getattr(self._wrapped_value_, name)
 
     def __str__(self) -> str:
-        return str(self.enum_value)
+        return str(self._get_enum_value((self, self._wrapped_value_)))
 
 
 _AUTO = types.new_class(
@@ -167,7 +190,7 @@ _AUTO = types.new_class(
 
 # noinspection PyAbstractClass
 # custom enum class that's tied to a dataclass and mirrors its fields on getattr
-class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
+class AutoFieldsEnum(FieldsEnum):
     """Enum class that mirrors the fields on a dataclass."""
 
     __wrapped_type__ = _AUTO
@@ -179,12 +202,10 @@ class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
         Dynamically generate a dataclass from the enum definition, frozen, with slots,
         from the __annotations__ of this class.
         """
-        dtcls = types.new_class(cls.__name__ + "Dataclass", bases=(FieldsEnumDatatype,))
-        dtcls.__annotations__ = cls.__dict__.get("__annotations__", {})
-        dtcls.__module__ = cls.__module__
-        dtcls.__qualname__ = cls.__qualname__ + "Dataclass"
-        dtcls.__doc__ = cls.__doc__
-        dtcls = slots_dataclass(frozen=True)(dtcls)
+        dtcls_candidates = [c for c in cls.mro() if c is not cls and is_dataclass(c)]
+        if not dtcls_candidates:
+            raise TypeError(f"{cls.__qualname__} must inherit from a dataclass!")
+        dtcls = dtcls_candidates[0]
         cls.__wrapped_type__ = dtcls
 
         super().__init_subclass__(**kwargs)
@@ -192,9 +213,15 @@ class AutoFieldsEnum(FieldsEnumDatatype, FieldsEnum):
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:  # noqa: D102
         dtcls_value = cls.__wrapped_type__(*args, **kwargs)
         # yes, enum metaclasses make a mess of this
-        obj = cast(Self, FieldsEnum.__new_member__(cls, dtcls_value))
+        obj = cast("Self", FieldsEnum.__new_member__(cls, dtcls_value))
         obj._dtcls_value_ = dtcls_value
         return obj
+
+
+if sys.version_info >= (3, 11):
+    DataclassEnum = ValueMatchEnum
+else:
+    DataclassEnum = AutoFieldsEnum
 
 
 _T = TypeVar("_T")
@@ -434,7 +461,7 @@ class Registry(ABC, Generic[_ID, _RT]):
     def __registry_new_for__(cls, registry_id: _ID, *args: Any, **kwargs: Any) -> _RT:
         registered_cls: type[_RT] = cls.__registry_get_class_for__(registry_id)
         # noinspection PyArgumentList
-        return cast(_RT, registered_cls(*args, **kwargs))
+        return cast("_RT", registered_cls(*args, **kwargs))
 
 
 _sT_contra = TypeVar("_sT_contra", str, bytes, contravariant=True)
@@ -565,7 +592,7 @@ class IntValueMixin(FieldsParserSerializer):
         return self.value
 
 
-_ST = TypeVar("_ST", bound=Union[SupportsStr, ParseableSerializable])
+_ST = TypeVar("_ST", bound=SupportsStr | ParseableSerializable)
 
 
 @slots_dataclass
@@ -602,7 +629,9 @@ class ListValueMixin(MutableSequence, FieldsParserSerializer, Generic[_ST]):
             raise TypeError(f"Invalid splitter for {cls.__name__}: {splitter!r}")
         vcls = cls._values_type
         values: list[_ST] = [
-            vcls.parse(value) if issubclass(vcls, Parseable) else vcls(value)
+            cast(
+                "_ST", vcls.parse(value) if issubclass(vcls, Parseable) else vcls(value)
+            )
             for value in str_values
         ]
         return dict(values=values, raw_value=raw_value)
@@ -669,7 +698,7 @@ def time_cache(
             return func(*args, **kwargs)
 
         wrapper = cast(
-            _TimeCachedCallable[_rV_co],
+            "_TimeCachedCallable[_rV_co]",
             functools.lru_cache(maxsize=maxsize, typed=typed)(_wrapper),
         )
 
@@ -685,6 +714,17 @@ def time_cache(
         return wrapped
 
     return decorator
+
+
+def is_socket_bound(sock: socket.socket) -> bool:
+    """Check if a socket is bound to a local address."""
+    if sock.family not in {socket.AF_INET, socket.AF_INET6}:
+        raise TypeError(f"Unsupported socket family: {sock.family}")
+    try:
+        bind_addr = sock.getsockname()
+        return bool(bind_addr[1])  # if port is 0 then it's not bound
+    except OSError:
+        return False
 
 
 @time_cache(expiry=60.0)
@@ -714,7 +754,7 @@ def get_local_ip_for_dest(host: str) -> str:
     """Get the IP address of the current machine relative to the given host on the local network."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.connect((host, 0))
-        return cast(str, s.getsockname()[0])
+        return cast("str", s.getsockname()[0])
 
 
 def get_external_ip_for_dest(host: str) -> str:
@@ -734,18 +774,18 @@ def db_to_amplitude(db: float, *, ref: float = 1.0) -> float: ...
 
 @overload
 def db_to_amplitude(
-    db: NDArray[np.float32], *, ref: float = 1.0
-) -> NDArray[np.float32]: ...
+    db: NDArray[np.floating], *, ref: float = 1.0
+) -> NDArray[np.floating]: ...
 
 
 @overload
 def db_to_amplitude(
-    db: float | NDArray[np.float32], *, ref: float = 1.0
-) -> float | NDArray[np.float32]: ...
+    db: float | NDArray[np.floating], *, ref: float = 1.0
+) -> float | NDArray[np.floating]: ...
 
 
 def db_to_amplitude(
-    db: float | NDArray[np.float32], *, ref: float = 1.0
-) -> float | NDArray[np.float32]:
+    db: float | NDArray[np.floating], *, ref: float = 1.0
+) -> float | NDArray[np.floating]:
     """Convert dB-scaled values to amplitude."""
     return ((ref**2) * np.power(10.0, db * 0.1)) ** 0.5

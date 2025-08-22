@@ -7,17 +7,13 @@ import enum
 import logging
 import threading
 import time
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from functools import partial
 from types import MappingProxyType, TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Collection,
-    Mapping,
-    Sequence,
-    Union,
 )
 
 from sibilant import rtp, sip
@@ -34,9 +30,6 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from sibilant.structures import SIPAddress
-
-
-# ruff: noqa: ARG002
 
 
 _logger = logging.getLogger(__name__)
@@ -355,7 +348,7 @@ class PhoneState(enum.Enum):
 IncomingCallCallback = Callable[[VoIPCall], bool]
 EstablishedCallCallback = Callable[[VoIPCall], None]
 TerminatedCallCallback = Callable[[VoIPCall], None]
-CallFailureCallback = Callable[[VoIPCall, Exception], Union[bool, None]]
+CallFailureCallback = Callable[[VoIPCall, Exception], bool | None]
 DTMFEventCallback = Callable[[VoIPCall, rtp.DTMFCode], None]
 
 
