@@ -961,7 +961,7 @@ class RTPClient:
                 try:
                     packet = self._recv_packet(data)
 
-                except RTPParseError as e:
+                except (RTPParseError, RTPUnsupportedVersion) as e:
                     _logger.debug(f"Error parsing RTP packet: {e}")
 
                 except Exception as e:
