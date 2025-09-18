@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "sibilant"
 description = "sibilant makes python communicate over VoIP"
 authors = [
-    {name = "abk16", email = "awaken.mulled505@4wrd.cc"}
+    {name = "abk16", email = "sibilant@abk16.dev"}
 ]
 version = "0.4.1"
 requires-python = ">=3.10,<3.13"
