@@ -300,6 +300,7 @@ class SIPDialog(ABC):
         self._call_id: str = call_id or generate_call_id(*self._client.local_addr)
         self._cseq: int = cseq if cseq is not None else generate_cseq()
 
+        self._received: str | None = None
         self._rport: int | None = None
         self._destination: tuple[str, int] | None = None
 
@@ -450,6 +451,8 @@ class SIPDialog(ABC):
         if "Via" not in message.headers:
             raise SIPBadMessage("Missing Via header")
         via_hdr: hdr.ViaHeader = message.headers["Via"]
+        if (via_hdr.first.received and not self._received) or replace:
+            self._received = via_hdr.first.received
         if (isinstance(via_hdr.first.rport, int) and not self._rport) or replace:
             self._rport = via_hdr.first.rport
         if not self._destination or replace:
@@ -604,6 +607,22 @@ class SIPRegistration(SIPDialog):
     def registered(self) -> bool:
         """Whether we are currently registered with the server within this dialog."""
         return self._registered
+
+    def _store_sender(self, message: SIPMessage, *, replace: bool = True) -> None:
+        super()._store_sender(message, replace=replace)
+        if (
+            self._received
+            and self._rport
+            and (
+                self._client.own_address_seen_by_server is None
+                or (
+                    replace
+                    and (self._received, self._rport)
+                    != self._client.own_address_seen_by_server
+                )
+            )
+        ):
+            self._client.own_address_seen_by_server = (self._received, self._rport)
 
     async def _handle_message(self, message: SIPMessage) -> None:
         raise SIPException("Received unexpected message in registration flow")
@@ -1526,6 +1545,7 @@ class SIPClient:  # noqa: PLR0904
         self._server_addr: tuple[str, int] = (server_host, server_port)
         # FIXME: do we even need this local address now? Since we determine automatically our external address (be it interface or public IP)
         self._local_addr: tuple[str, int] = (local_host, local_port)
+        self.own_address_seen_by_server: tuple[str, int] | None = None
 
         self.default_response_timeout: float = default_response_timeout
         self._max_forwards: int = max_forwards
@@ -1602,7 +1622,11 @@ class SIPClient:  # noqa: PLR0904
     @property
     def own_ip_to_server(self) -> str:
         """The IP address of the client as seen by the SIP server."""
-        return get_external_ip_for_dest(self.server_host)
+        return (
+            get_external_ip_for_dest(self.server_host)
+            if self.own_address_seen_by_server is None
+            else self.own_address_seen_by_server[0]
+        )
 
     @property
     def own_addr_to_server(self) -> tuple[str, int]:
@@ -1610,7 +1634,10 @@ class SIPClient:  # noqa: PLR0904
         # FIXME: if the connection is over NAT the port will be different as well!
         #        this is usually okay, due to the rport mechanism, but we should still
         #        investigate proper handling of this (see e.g. RFC 3581)
-        return self.own_ip_to_server, self.local_port
+        return self.own_address_seen_by_server or (
+            self.own_ip_to_server,
+            self.local_port,
+        )
 
     @property
     def server_uri(self) -> SIPURI:
@@ -1650,10 +1677,11 @@ class SIPClient:  # noqa: PLR0904
         This value is used primarily in the ``Contact:`` header.
         """
         # TODO: should Contact: URI always include stuff like transport etc?
+        own_host, own_port = self.own_addr_to_server
         return dataclass_replace(
             self.binding_uri,
-            host=self.own_ip_to_server,
-            port=self.local_port,
+            host=own_host,
+            port=own_port,
             params={"ob": None, "transport": "UDP"},
         )
 
@@ -2444,7 +2472,11 @@ class SIPClient:  # noqa: PLR0904
         if remote_address is None:
             remote_address = self.server_addr
 
-        own_external_ip: str = get_external_ip_for_dest(remote_address[0])
+        own_external_ip: str
+        if remote_address == self.server_addr:
+            own_external_ip = self.own_ip_to_server
+        else:
+            own_external_ip = get_external_ip_for_dest(remote_address[0])
 
         medias: list[sdp.SDPMedia] = []
         for port, profiles in rtp_profiles_by_port.items():
